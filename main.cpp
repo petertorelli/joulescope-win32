@@ -90,6 +90,8 @@ void
 process_sample_callback_downsampled(void* lpuser, float I, float V, uint8_t bits)
 {
 	double E = ((double)I * (double)V) / 2.0;
+	float Ef = (float)E;
+	transcendental_check(Ef);
 	g_stats.m_accumulator += E;
 	++g_stats.m_total_accumulated;
 	if (g_stats.m_total_accumulated == g_stats.m_total_downsamples)
