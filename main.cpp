@@ -5,7 +5,7 @@
 /**
  * TODO
  * 1. wide strings
- * 2. optimize m_data / buffer passing
+ * 2. pass a reference for m_data vectors rather than a copy
  * 3. fix the m_overlapped buffer grow/shrink issue
  */
 using namespace std;
@@ -13,7 +13,7 @@ using namespace std::filesystem;
 
 path          g_tmpdir(".");
 const path    g_power_fn = "downsampled.raw";
-const path    g_etime_fn = "timestamps-emon.json";
+const path    g_cal_etime_fn = "timestamps-emon.json";
 fstream       g_trace_file;
 bool          g_spinning(false);
 HANDLE        g_hspin = NULL;
@@ -32,6 +32,73 @@ CommandTable  g_commands = {
 	std::make_pair("debug", cmd_debug),
 	//TODO std::make_pair("help", cmd_help)
 };
+
+/*
+ * going old school here so there can be no question
+ */
+/**
+ * The EndpointIn data_fn callback puts raw samples into the g_raw_*
+ * buffers. The EndpointIn process_fn reads them out and calls the
+ * RawProcessor, putting the resulting float values into another buffer.
+ * The raw buffers are flushed by the process_fn function. If process_fn
+ * can't respond fast enough, "Buffer overflow" is printed to the console.
+ * The RawProcessor callback flushes the float buffer every time it fills.
+ * It is up to the function that manages the file to flush the processed
+ * sample buffer to disk before closing.
+ *
+ * Here's the flow:
+ *
+ * endpoint_data_fn_callback -> get a packet and call ...
+ * queue_raw_sample -> queue the raw samples and complain if we overvlow.
+ * endpoint_process_fn_callback -> call RawProcessor.process in a loop...
+ * raw_processor_callback -> queue a calibrated sample from RawProcessor
+ * flush_processed_samples_to_disk --> writes calibrated samples to disk
+ */
+// TODO: Should the ratio of buffer sizes depend on the sample rate?
+constexpr auto RAW_BUFFER_SIZE(1024 * 128);
+constexpr auto CAL_BUFFER_SIZE(1024 * 64);
+// Raw data
+uint16_t g_raw_i[RAW_BUFFER_SIZE];
+uint16_t g_raw_v[RAW_BUFFER_SIZE];
+size_t   g_num_buffered_raw(0);
+// Processed data
+float    g_cal_e[CAL_BUFFER_SIZE];
+size_t   g_num_buffered_cal(0);
+
+void
+queue_raw_sample(uint16_t _i, uint16_t _v)
+{
+	g_raw_i[g_num_buffered_raw] = _i;
+	g_raw_v[g_num_buffered_raw] = _v;
+	++g_num_buffered_raw;
+	if (g_num_buffered_raw >= RAW_BUFFER_SIZE)
+	{
+		cout << "Buffer overflow" << endl;
+		g_num_buffered_raw = 0;
+	}
+}
+
+bool
+endpoint_process_fn_callback(void)
+{
+	for (size_t j(0); j < g_num_buffered_raw; ++j)
+	{
+		g_raw_processor.process(g_raw_i[j], g_raw_v[j]);
+	}
+	//cout << "Processed " << g_num_buffered_raw << " samples." << endl;
+	g_num_buffered_raw = 0;
+	return false;
+}
+
+void
+flush_processed_samples_to_disk(void)
+{
+	// sizeof_t(float) had better be 4!
+	g_trace_file.write(reinterpret_cast<const char*>(g_cal_e), g_num_buffered_cal * 4);
+	cout << "Wrote " << g_num_buffered_cal << " processed samples to disk." << endl;
+	g_num_buffered_cal = 0;
+}
+
 
 inline void
 gpi0_check(bool& last, bool current)
@@ -74,20 +141,7 @@ transcendental_check(float f)
 }
 
 void
-process_sample_callback_raw(void* lpuser, float I, float V, uint8_t bits)
-{
-	double E = ((double)I * (double)V) / 2.0; 
-	float Ef = (float)E;
-	transcendental_check(Ef);
-	// TODO would a buffer be faster than byte writes?
-	g_trace_file.write(reinterpret_cast<const char*>(&Ef), sizeof(float));
-	++g_stats.m_total_samples;
-	heartbeat();
-	gpi0_check(g_stats.m_last_gpi0, ((bits >> 4) & 1) == 1);
-}
-
-void
-process_sample_callback_downsampled(void* lpuser, float I, float V, uint8_t bits)
+raw_processor_callback(void *puser, float I, float V, uint8_t bits)
 {
 	double E = ((double)I * (double)V) / 2.0;
 	float Ef = (float)E;
@@ -97,9 +151,12 @@ process_sample_callback_downsampled(void* lpuser, float I, float V, uint8_t bits
 	if (g_stats.m_total_accumulated == g_stats.m_total_downsamples)
 	{
 		++g_stats.m_total_samples;
-		// TODO would a buffer be faster than byte writes?
-		float x = (float)g_stats.m_accumulator;
-		g_trace_file.write(reinterpret_cast<const char*>(&x), sizeof(float));
+		g_cal_e[g_num_buffered_cal] = (float)g_stats.m_accumulator;
+		++g_num_buffered_cal;
+		if (g_num_buffered_cal == CAL_BUFFER_SIZE)
+		{
+			flush_processed_samples_to_disk(); // resets counter/index
+		}
 		g_stats.m_total_accumulated = 0;
 		g_stats.m_accumulator = 0;
 		heartbeat();
@@ -121,18 +178,19 @@ process_packet(JoulescopePacket* pkt)
 	uint16_t delta = pkt->pkt_index - g_stats.m_last_pkt_index;
 	if (delta > 1)
 	{
+		// Packet loss due to USB processing latency
 		g_stats.m_total_dropped_pkts += delta;
 	}
 	g_stats.m_last_pkt_index = pkt->pkt_index;
 	for (size_t i(0); i < 126; ++i) // TODO Magic #
 	{
-		g_raw_processor.process(pkt->samples[i].current, pkt->samples[i].voltage);
+		queue_raw_sample(pkt->samples[i].current, pkt->samples[i].voltage);
 	}
 }
 
 //TODO this should be a reference otherwie we're copying lots of bytes
 bool
-data_callback(vector<UCHAR> data)
+endpoint_data_fn_callback(vector<UCHAR> data)
 {
 	JoulescopePacket* pkts = (JoulescopePacket*)data.data();
 	size_t num_pkts = data.size() / 512;
@@ -172,7 +230,7 @@ write_timestamps(void)
 {
 	// TODO: since we already use JsonCpp, why not use that?
 	// Always write this file, even if no timestamps
-	path fn = g_tmpdir / g_etime_fn;
+	path fn = g_tmpdir / g_cal_etime_fn;
 	fstream file;
 	file.open(fn, ios::out);
 	cout << "# timestamps " << g_stats.m_timestamps.size() << endl;
@@ -189,7 +247,7 @@ write_timestamps(void)
 	file << "]" << endl;
 	file.close();
 	// Required by the framework
-	wcout << "FileRegister:name(" << wstring(g_etime_fn.c_str()) << "), class(etime), type(js110)" << endl;
+	wcout << "FileRegister:name(" << wstring(g_cal_etime_fn.c_str()) << "), class(etime), type(js110)" << endl;
 }
 
 void
@@ -200,6 +258,7 @@ cmd_exit(vector<string> tokens)
 		cmd_stop_trace(vector<string>());
 	}
 	g_joulescope.close();
+	flush_processed_samples_to_disk();
 	g_trace_file.close();
 	// Required to let the host know the exit was OK
 	cout << "m-exit" << endl;
@@ -308,15 +367,7 @@ cmd_start_trace(vector<string> tokens)
 		cout << "e-[No Joulescopes are open]" << endl;
 		return;
 	}
-	// TODO: Wondering if the raw processor is faster than sample_rate = 1'000'000
-	if (g_stats.m_sample_rate == MAX_SAMPLE_RATE)
-	{
-		g_raw_processor.callback_set(process_sample_callback_raw, nullptr);
-	}
-	else
-	{
-		g_raw_processor.callback_set(process_sample_callback_downsampled, nullptr);
-	}
+	g_raw_processor.callback_set(raw_processor_callback, nullptr);
 	// Seems awkward to do this here.
 	g_raw_processor.calibration_set(g_joulescope.m_calibration);
 
@@ -335,7 +386,7 @@ cmd_start_trace(vector<string> tokens)
 	g_trace_file.write((char*)x.b, 4);
 	g_stats.reset();
 	g_joulescope.power_on(true);
-	g_joulescope.streaming_on(true, data_callback);
+	g_joulescope.streaming_on(true, endpoint_data_fn_callback, endpoint_process_fn_callback);
 	g_spinning = true;
 	g_hspin = CreateThread(
 		NULL,
@@ -371,6 +422,7 @@ cmd_stop_trace(vector<string> tokens)
 		throw runtime_error("main::cmd_stop_trace() ... Trace thread failed to exit");
 	}
 	g_joulescope.streaming_on(false);
+	flush_processed_samples_to_disk();
 	g_trace_file.close();
 	write_timestamps();
 	cout << "m-[Trace stopped]" << endl;
@@ -392,6 +444,13 @@ cmd_samplerate(vector<string> tokens)
 	cout << "m-samplerate[" << g_stats.m_sample_rate << "]" << endl;
 }
 
+void
+sigint_handler(int signal)
+{
+	cout << "Caught SIGINT..." << endl;
+	cmd_exit(vector<string>());
+}
+
 int
 main(int argc, char* argv[])
 {
@@ -399,6 +458,8 @@ main(int argc, char* argv[])
 	
 	setvbuf(stdout, NULL, _IONBF, 0);
 	setvbuf(stderr, NULL, _IONBF, 0);
+
+	signal(SIGINT, sigint_handler);
 
 	cout << "Joulescope(R) JS110 Win32 Driver" << endl;
 	cout << "Version : " << VERSION << endl;
@@ -435,7 +496,7 @@ main(int argc, char* argv[])
 	}
 	// We should never exit via this path, only via cmd_exit()
 	cout << "e-[Unexpected exit]" << endl;
-	cout << "m-exit" << endl;
+	cmd_exit(vector<string>());
 	return -1;
 }
 

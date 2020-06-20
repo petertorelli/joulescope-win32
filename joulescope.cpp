@@ -61,22 +61,21 @@ Joulescope::power_on(bool on)
 }
 
 void
-Joulescope::streaming_on(bool on, EndpointIn_data_fn_t callback)
+Joulescope::streaming_on(bool on, EndpointIn_data_fn_t data_fn, EndpointIn_process_fn_t process_fn, EndpointIn_stop_fn_t stop_fn)
 {
 	if (on)
 	{
 		m_state.settings.streaming = JoulescopeState::Streaming::NORMAL;
 		update_settings();
-		// TODO: What should the transfer size be? There are a few cases where we are pass by copy, too big?
 		UINT transfers_outstanding =    8; // the maximum number of USB transfers issued simultaneously [8]
 		UINT transfer_length       =  256; // the USB transfer length in packets [256]
 		m_device.read_stream_start(
 			STREAMING_ENDPOINT_ID,
 			transfers_outstanding,
 			transfer_length * BULK_IN_LENGTH,
-			callback,
-			nullptr,
-			nullptr
+			data_fn,
+			process_fn,
+			stop_fn
 		);
 	}
 	else
@@ -334,7 +333,7 @@ Joulescope::scan(void)
  * or if the serial number is not included (or empty), the first joulescope
  * found.
  *
- * If no joulescipes are found, it returns an empty wide string.
+ * If no joulescopes are found, it returns an empty wide string.
  */
 wstring
 Joulescope::find_joulescope_by_serial_number(string serial_number)

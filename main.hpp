@@ -5,6 +5,9 @@
 #include <fstream>
 #include <filesystem>
 #include <iomanip>
+
+#include <csignal>
+
 #include <boost\algorithm\string.hpp>
 #include <boost\algorithm\string\trim_all.hpp>
 

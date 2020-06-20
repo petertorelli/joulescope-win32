@@ -110,7 +110,11 @@ public:
 	bool is_open(void);
 	// Control
 	void power_on(bool on);
-	void streaming_on(bool on, EndpointIn_data_fn_t callback = nullptr);
+	void streaming_on(
+		bool on,
+		EndpointIn_data_fn_t data_fn = nullptr,
+		EndpointIn_process_fn_t process_fn = nullptr,
+		EndpointIn_stop_fn_t stop_fn = nullptr);
 	// Device discovery
 	std::wstring find_joulescope_by_serial_number(std::string serial_number = "");
 	std::vector<std::wstring> scan(void);
