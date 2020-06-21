@@ -93,6 +93,9 @@ EndpointIn::_close(void)
 		DBG("EndpointIn::_close() ... CloseHandle(event=" << m_event << ")");
 		CloseHandle(m_event);
 	}
+#ifdef ENDPOINT_PERFSTATS
+	print_stats_to_console();
+#endif
 	m_event = NULL;
 }
 
@@ -176,7 +179,16 @@ EndpointIn::_expire(void)
 				vector<UCHAR> slice(ov->m_buffer.begin(), ov->m_buffer.begin() + length);
 				try
 				{
+#ifdef ENDPOINT_PERFSTATS
+					std::chrono::high_resolution_clock::time_point a = std::chrono::high_resolution_clock::now();
 					rv = m_data_fn(slice);
+					std::chrono::high_resolution_clock::time_point b = std::chrono::high_resolution_clock::now();
+					auto delta = b - a;
+					float nsec = std::chrono::duration_cast<std::chrono::nanoseconds>(delta).count() / 1e9;
+					m_perf_stats.data_fn_time.push_back(nsec);
+#else
+					rv = m_data_fn(slice);
+#endif
 				}
 				catch (...)
 				{
@@ -302,7 +314,17 @@ EndpointIn::process_signal(void)
 		{
 			if (m_process_fn != nullptr)
 			{
+#ifdef ENDPOINT_PERFSTATS
+				std::chrono::high_resolution_clock::time_point a = std::chrono::high_resolution_clock::now();
+				bool rv = m_process_fn();
+				std::chrono::high_resolution_clock::time_point b = std::chrono::high_resolution_clock::now();
+				auto delta = b - a;
+				float nsec = std::chrono::duration_cast<std::chrono::nanoseconds>(delta).count() / 1e9;
+				m_perf_stats.process_fn_time.push_back(nsec);
+				return rv;
+#else
 				return m_process_fn();
+#endif
 			}
 		}
 		catch (...)

@@ -17,6 +17,11 @@
 
 template<typename ... Args> std::string string_format(const std::string& format, Args ... args);
 
+#define ENDPOINT_PERFSTATS
+#include <chrono>
+#include <numeric>
+#include <algorithm>
+
 // TODO: Cleanup logging and messaging.
 
 #if 0
@@ -150,6 +155,38 @@ private:
 	ULONG m_byte_count_total;
 	ULONG m_transfer_count;
 	ULONG m_transfer_expire_max;
+
+#ifdef ENDPOINT_PERFSTATS
+	struct PerfStats
+	{
+		PerfStats()
+		{
+			data_fn_time.reserve(100'000);
+			process_fn_time.reserve(100'000);
+		}
+		// Arrays of deltas so we can do max/min/avg on close
+		std::vector<float> data_fn_time;
+		std::vector<float> process_fn_time;
+	} m_perf_stats;
+	void print_stats_to_console(void)
+	{
+		double avg;
+		
+		avg = std::accumulate(
+			m_perf_stats.data_fn_time.begin(),
+			m_perf_stats.data_fn_time.end(), 0.0) /
+			m_perf_stats.data_fn_time.size();
+
+		std::cout << "Avg data fn time " << avg << " [" << m_perf_stats.data_fn_time.size() << "]" << std::endl;
+
+		avg = std::accumulate(
+			m_perf_stats.process_fn_time.begin(),
+			m_perf_stats.process_fn_time.end(), 0.0) /
+			m_perf_stats.process_fn_time.size();
+
+		std::cout << "Avg process fn time " << avg << " [" << m_perf_stats.process_fn_time.size() << "]" << std::endl;
+	}
+#endif
 };
 
 // pipe_id -> EndpointIn
