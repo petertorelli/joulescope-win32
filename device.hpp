@@ -18,7 +18,7 @@
 
 template<typename ... Args> std::string string_format(const std::string& format, Args ... args);
 
-#define ENDPOINT_PERFSTATS
+//#define ENDPOINT_PERFSTATS
 #include <chrono>
 #include <numeric>
 #include <algorithm>
