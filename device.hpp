@@ -222,7 +222,7 @@ struct ControlTransferResponse
 	ControlTransferResponse(
 		WINUSB_SETUP_PACKET _setup_packet,
 		DeviceEvent         _result,
-		std::vector<UCHAR> _data
+		std::vector<UCHAR>  _data // TODO is this a time-wasting deep-copy?
 	) : setup_packet(_setup_packet),
 		result(_result),
 		data(_data)
@@ -250,7 +250,7 @@ struct ControlTransferAsync_Command
 	ControlTransferAsync_Command(
 		ControlTransferAsync_cbk_fn _cbk_fn,
 		WINUSB_SETUP_PACKET         _setup_packet,
-		std::vector<UCHAR>          _buffer
+		std::vector<UCHAR>          _buffer // TODO: is this a time-wasting deep-copy?
 	) : cbk_fn(_cbk_fn),
 		setup_packet(_setup_packet),
 		buffer(_buffer)
