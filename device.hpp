@@ -7,6 +7,7 @@
 #include <vector>
 #include <functional>
 #include <ctime>
+#include <iomanip>
 
 #include <Windows.h>
 #include <SetupAPI.h>
@@ -170,21 +171,43 @@ private:
 	} m_perf_stats;
 	void print_stats_to_console(void)
 	{
-		double avg;
+		double avg, max, min;
+		size_t n;
 		
+		std::cout << std::setprecision(3);
+
+		n = m_perf_stats.data_fn_time.size();
+		min = *std::min_element(
+			m_perf_stats.data_fn_time.begin(),
+			m_perf_stats.data_fn_time.end());
 		avg = std::accumulate(
 			m_perf_stats.data_fn_time.begin(),
-			m_perf_stats.data_fn_time.end(), 0.0) /
-			m_perf_stats.data_fn_time.size();
+			m_perf_stats.data_fn_time.end(), 0.0) / n;
+		max = *std::max_element(
+			m_perf_stats.data_fn_time.begin(),
+			m_perf_stats.data_fn_time.end());
+		avg *= 1e6;
+		min *= 1e6;
+		max *= 1e6;
+		std::cout << "   data_fn [" << min << ", " << avg << ", " << max << "] n=" << n << std::endl;
 
-		std::cout << "Avg data fn time " << avg << " [" << m_perf_stats.data_fn_time.size() << "]" << std::endl;
-
+		n = m_perf_stats.process_fn_time.size();
+		min = *std::min_element(
+			m_perf_stats.process_fn_time.begin(),
+			m_perf_stats.process_fn_time.end());
 		avg = std::accumulate(
 			m_perf_stats.process_fn_time.begin(),
-			m_perf_stats.process_fn_time.end(), 0.0) /
-			m_perf_stats.process_fn_time.size();
+			m_perf_stats.process_fn_time.end(), 0.0) / n;
+		max = *std::max_element(
+			m_perf_stats.process_fn_time.begin(),
+			m_perf_stats.process_fn_time.end());
+		avg *= 1e6;
+		min *= 1e6;
+		max *= 1e6;
+		std::cout << "process_fn [" << min << ", " << avg << ", " << max << "] n=" << n << std::endl;
 
-		std::cout << "Avg process fn time " << avg << " [" << m_perf_stats.process_fn_time.size() << "]" << std::endl;
+		std::cout << std::defaultfloat;
+
 	}
 #endif
 };
