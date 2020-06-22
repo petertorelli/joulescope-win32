@@ -1,5 +1,5 @@
 #include "main.hpp"
-#define VERSION "0.9.0"
+#define VERSION "0.10.0"
 #define PYJOULESCOPE_GITHUB_HEAD "97b9e90"
 
 /**
@@ -12,11 +12,12 @@ using namespace std;
 using namespace std::filesystem;
 
 path          g_tmpdir(".");
-const path    g_power_fn = "downsampled.raw";
-const path    g_cal_etime_fn = "timestamps-emon.json";
+const path    g_power_fn("downsampled.raw");
+const path    g_cal_etime_fn("timestamps-emon.json");
 fstream       g_trace_file;
 bool          g_spinning(false);
-HANDLE        g_hspin = NULL;
+bool          g_waiting_on_user(false);
+HANDLE        g_hspin(NULL);
 RawProcessor  g_raw_processor;
 Joulescope    g_joulescope;
 TraceStats    g_stats;
@@ -258,7 +259,6 @@ cmd_exit(vector<string> tokens)
 		cmd_stop_trace(vector<string>());
 	}
 	g_joulescope.close();
-	flush_processed_samples_to_disk();
 	g_trace_file.close();
 	// Required to let the host know the exit was OK
 	cout << "m-exit" << endl;
@@ -445,10 +445,17 @@ cmd_samplerate(vector<string> tokens)
 }
 
 void
-sigint_handler(int signal)
+sigint_handler(int _signal)
 {
-	cout << "Caught SIGINT..." << endl;
-	cmd_exit(vector<string>());
+	static bool cleanup_done(false);
+	cout << "e-[Caught signal #" << _signal << "]" << endl;
+	// In case of multiple signals (do I need a mutex?)
+	if (!cleanup_done)
+	{
+		cleanup_done = true;
+		g_waiting_on_user = false;
+		cmd_exit(vector<string>());
+	}
 }
 
 int
@@ -460,14 +467,24 @@ main(int argc, char* argv[])
 	setvbuf(stderr, NULL, _IONBF, 0);
 
 	signal(SIGINT, sigint_handler);
+	signal(SIGTERM, sigint_handler);
+	signal(SIGBREAK, sigint_handler);
 
 	cout << "Joulescope(R) JS110 Win32 Driver" << endl;
 	cout << "Version : " << VERSION << endl;
 	cout << "Head    : " << PYJOULESCOPE_GITHUB_HEAD << endl;
+	g_waiting_on_user = true;
+	cout << "m-ready" << endl;
 	try {
-		cout << "m-ready" << endl;
-		while (getline(cin, line))
+		while (g_waiting_on_user)
 		{
+			getline(cin, line);
+			// CTRL-C causes a fail that needs clearing before calling again
+			if (cin.fail() || cin.eof())
+			{
+				cin.clear();
+				continue;
+			}
 			vector<string> tokens;
 			boost::trim(line);
 			boost::split(tokens, line, boost::is_any_of(" \t"));
@@ -494,9 +511,8 @@ main(int argc, char* argv[])
 	{
 		cout << "e-[Unknown exception in main()]" << endl;
 	}
-	// We should never exit via this path, only via cmd_exit()
+	// We should never exit via this path!
 	cout << "e-[Unexpected exit]" << endl;
-	cmd_exit(vector<string>());
 	return -1;
 }
 
