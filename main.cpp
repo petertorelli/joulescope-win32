@@ -1,5 +1,5 @@
 #include "main.hpp"
-#define VERSION "0.10.0"
+#define VERSION "0.10.1"
 #define PYJOULESCOPE_GITHUB_HEAD "97b9e90"
 
 /**
@@ -96,7 +96,7 @@ flush_processed_samples_to_disk(void)
 {
 	// sizeof_t(float) had better be 4!
 	g_trace_file.write(reinterpret_cast<const char*>(g_cal_e), g_num_buffered_cal * 4);
-	cout << "Wrote " << g_num_buffered_cal << " processed samples to disk." << endl;
+	//cout << "Wrote " << g_num_buffered_cal << " processed samples to disk." << endl;
 	g_num_buffered_cal = 0;
 }
 
