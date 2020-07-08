@@ -200,7 +200,7 @@ Joulescope::calibration_read_raw(void)
 			0,
 			4096
 		);
-		cout << "Bytes read during JSON scan " << data.size() << endl;
+		//cout << "Bytes read during JSON scan " << data.size() << endl;
 		cal_raw.insert(cal_raw.end(), data.begin(), data.end());
 	}
 	//cout << cal_raw << endl;
