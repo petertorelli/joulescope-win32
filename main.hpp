@@ -64,5 +64,7 @@ void cmd_power_on(std::vector<std::string>);
 void cmd_power_off(std::vector<std::string>);
 void cmd_start_trace(std::vector<std::string>);
 void cmd_stop_trace(std::vector<std::string>);
+void cmd_enable_timer(std::vector<std::string>);
+void cmd_disable_timer(std::vector<std::string>);
 void cmd_samplerate(std::vector<std::string>);
 void cmd_debug(std::vector<std::string>);

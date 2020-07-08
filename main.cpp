@@ -1,5 +1,5 @@
 #include "main.hpp"
-#define VERSION "0.10.1"
+#define VERSION "0.11.0"
 #define PYJOULESCOPE_GITHUB_HEAD "97b9e90"
 
 /**
@@ -17,6 +17,7 @@ const path    g_cal_etime_fn("timestamps-emon.json");
 fstream       g_trace_file;
 bool          g_spinning(false);
 bool          g_waiting_on_user(false);
+bool          g_observe_timestamps(false);
 HANDLE        g_hspin(NULL);
 RawProcessor  g_raw_processor;
 Joulescope    g_joulescope;
@@ -29,6 +30,8 @@ CommandTable  g_commands = {
 	std::make_pair("power-off", cmd_power_off),
 	std::make_pair("start-trace", cmd_start_trace),
 	std::make_pair("stop-trace", cmd_stop_trace),
+	std::make_pair("enable-timer", cmd_enable_timer),
+	std::make_pair("disable-timer", cmd_disable_timer),
 	std::make_pair("samplerate", cmd_samplerate),
 	std::make_pair("debug", cmd_debug),
 	//TODO std::make_pair("help", cmd_help)
@@ -104,12 +107,15 @@ flush_processed_samples_to_disk(void)
 inline void
 gpi0_check(bool& last, bool current)
 {
+	float timestamp;
 	// packed bits : 7 : 6 = 0, 5 = voltage_lsb, 4 = current_lsb, 3 : 0 = i_range
 	if (last && !current)
 	{
-		float timestamp = (float)g_stats.m_total_samples / (float)g_stats.m_sample_rate;
-		g_stats.m_timestamps.push_back(timestamp);
-		cout << "m-lap-us-" << (unsigned int)(timestamp * 1e6) << endl;
+		if (g_observe_timestamps == true) {
+			timestamp = (float)g_stats.m_total_samples / (float)g_stats.m_sample_rate;
+			g_stats.m_timestamps.push_back(timestamp);
+			cout << "m-lap-us-" << (unsigned int)(timestamp * 1e6) << endl;
+		}
 	}
 	last = current;
 }
@@ -254,12 +260,7 @@ write_timestamps(void)
 void
 cmd_exit(vector<string> tokens)
 {
-	if (g_spinning)
-	{
-		cmd_stop_trace(vector<string>());
-	}
-	g_joulescope.close();
-	g_trace_file.close();
+	cmd_deinit(vector<string>());
 	// Required to let the host know the exit was OK
 	cout << "m-exit" << endl;
 	exit(0);
@@ -303,16 +304,15 @@ cmd_deinit(vector<string> tokens)
 {
 	if (g_spinning)
 	{
-		cout << "e-[Cannot talk to Joulescipe while streaming]" << endl;
-		return;
+		cmd_stop_trace(tokens);
 	}
 	if (g_joulescope.is_open())
 	{
 		g_joulescope.close();
 	}
-	else
+	if (g_trace_file.is_open())
 	{
-		cout << "e-[No Joulescopes are open]" << endl;
+		g_trace_file.close();
 	}
 }
 
@@ -340,8 +340,9 @@ cmd_power_off(vector<string> tokens)
 {
 	if (g_spinning)
 	{
-		cout << "e-[Cannot talk to Joulescipe while streaming]" << endl;
-		return;
+		cmd_stop_trace(tokens);
+		//cout << "e-[Cannot talk to Joulescipe while streaming]" << endl;
+		//return;
 	}
 	if (g_joulescope.is_open())
 	{
@@ -426,6 +427,20 @@ cmd_stop_trace(vector<string> tokens)
 	g_trace_file.close();
 	write_timestamps();
 	cout << "m-[Trace stopped]" << endl;
+}
+
+void
+cmd_enable_timer(vector<string> tokens)
+{
+	g_observe_timestamps = true;
+	cout << "m-[Observing timestamp signal]" << endl;
+}
+
+void
+cmd_disable_timer(vector<string> tokens)
+{
+	g_observe_timestamps = false;
+	cout << "m-[Ignoring timestamp signal]" << endl;
 }
 
 void
