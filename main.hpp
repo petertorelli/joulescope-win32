@@ -55,16 +55,23 @@ struct TraceStats
 	std::vector<float> m_timestamps;
 };
 
-typedef std::map<std::string, void(*)(std::vector<std::string>)> CommandTable;
+struct Command
+{
+	void(*func)(std::vector<std::string>);
+	std::string desc;
+};
 
-void cmd_exit(std::vector<std::string>);
-void cmd_init(std::vector<std::string>);
-void cmd_deinit(std::vector<std::string>);
-void cmd_power_on(std::vector<std::string>);
-void cmd_power_off(std::vector<std::string>);
-void cmd_start_trace(std::vector<std::string>);
-void cmd_stop_trace(std::vector<std::string>);
-void cmd_enable_timer(std::vector<std::string>);
-void cmd_disable_timer(std::vector<std::string>);
-void cmd_samplerate(std::vector<std::string>);
+typedef std::map<std::string, Command> CommandTable;
+
+void cmd_config(std::vector<std::string>);
 void cmd_debug(std::vector<std::string>);
+void cmd_deinit(std::vector<std::string>);
+void cmd_exit(std::vector<std::string>);
+void cmd_help(std::vector<std::string>);
+void cmd_init(std::vector<std::string>);
+void cmd_power(std::vector<std::string>);
+void cmd_samplerate(std::vector<std::string>);
+void cmd_timestamps(std::vector<std::string>);
+void cmd_trace_start(std::vector<std::string>);
+void cmd_trace_stop(std::vector<std::string>);
+void cmd_updates(std::vector<std::string>);

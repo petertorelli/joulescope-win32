@@ -1,5 +1,5 @@
 #include "main.hpp"
-#define VERSION "0.11.0"
+#define VERSION "0.12.0"
 #define PYJOULESCOPE_GITHUB_HEAD "97b9e90"
 
 /**
@@ -18,23 +18,24 @@ fstream       g_trace_file;
 bool          g_spinning(false);
 bool          g_waiting_on_user(false);
 bool          g_observe_timestamps(false);
+bool          g_updates(false);
 HANDLE        g_hspin(NULL);
 RawProcessor  g_raw_processor;
 Joulescope    g_joulescope;
 TraceStats    g_stats;
 CommandTable  g_commands = {
-	std::make_pair("exit", cmd_exit),
-	std::make_pair("init", cmd_init),
-	std::make_pair("deinit", cmd_deinit),
-	std::make_pair("power-on", cmd_power_on),
-	std::make_pair("power-off", cmd_power_off),
-	std::make_pair("start-trace", cmd_start_trace),
-	std::make_pair("stop-trace", cmd_stop_trace),
-	std::make_pair("enable-timer", cmd_enable_timer),
-	std::make_pair("disable-timer", cmd_disable_timer),
-	std::make_pair("samplerate", cmd_samplerate),
-	std::make_pair("debug", cmd_debug),
-	//TODO std::make_pair("help", cmd_help)
+	std::make_pair("config",      Command{ cmd_config,      "Report each configuration option." }),
+//	std::make_pair("debug",       Command{ cmd_debug,       "Enable debug messages, if any." }),
+	std::make_pair("deinit",      Command{ cmd_deinit,      "De-initialize the current JS110." }),
+	std::make_pair("exit",        Command{ cmd_exit,        "De-initialize (if necessary) and exit." }),
+	std::make_pair("help",        Command{ cmd_help,        "Print this help." }),
+	std::make_pair("init",        Command{ cmd_init,        "[serial] Find the first JS110 (or by serial #) and initialize it." }),
+	std::make_pair("power",       Command{ cmd_power,       "[on|off] Get/set output power state." }),
+	std::make_pair("samplerate",  Command{ cmd_samplerate,  "Set the sample rate to an integer multiple of 1e6." }),
+	std::make_pair("timestamps",  Command{ cmd_timestamps,  "[on|off] Get/set timestamping state." }),
+	std::make_pair("trace-start", Command{ cmd_trace_start, "(Filename) Start tracing to filename." }),
+	std::make_pair("trace-stop",  Command{ cmd_trace_stop,  "Stop tracing and close file." }),
+	std::make_pair("updates",     Command{ cmd_updates,     "[on|off] Get/set one-second update state." }),
 };
 
 /*
@@ -123,7 +124,11 @@ gpi0_check(bool& last, bool current)
 inline void
 heartbeat(void)
 {
-	if ((g_stats.m_total_samples % g_stats.m_sample_rate) == 0)
+	// If any of the critical error stats are nonzero, print a heartbeat
+	if (
+		(g_updates && ((g_stats.m_total_samples % g_stats.m_sample_rate) == 0))
+		|| ((g_stats.m_total_dropped_pkts + g_stats.m_total_nan + g_stats.m_total_inf) > 0)
+		)
 	{
 		cout << "Total samples " << g_stats.m_total_samples;
 		cout << " # dropped packets " << g_stats.m_total_dropped_pkts;
@@ -195,7 +200,7 @@ process_packet(JoulescopePacket* pkt)
 	}
 }
 
-//TODO this should be a reference otherwie we're copying lots of bytes
+// TODO this should be a reference otherwise we're copying lots of bytes
 bool
 endpoint_data_fn_callback(vector<UCHAR> data)
 {
@@ -258,6 +263,34 @@ write_timestamps(void)
 }
 
 void
+cmd_help(vector<string> tokens)
+{
+	for (CommandTable::iterator itr = g_commands.begin(); itr != g_commands.end(); ++itr)
+	{
+		cout << itr->first << " - " << itr->second.desc << endl;
+	}
+}
+
+void
+cmd_config(vector<string> tokens)
+{
+	cout << "m-updates[" << (g_updates ? "on" : "off") << "]" << endl;
+	cout << "m-samplerate[" << g_stats.m_sample_rate << "]" << endl;
+	cout << "m-timestamps[" << (g_observe_timestamps ? "on" : "off") << "]" << endl;
+	if (g_joulescope.is_open())
+	{
+		cout << "m-power[" << (g_joulescope.is_powered() ? "on" : "off") << "]" << endl;
+		cout << "m-tracing[" << (g_joulescope.is_tracing() ? "on" : "off") << "]" << endl;
+	}
+	else
+	{
+		// TODO: This isn't entirely true: the device may have been left in an indeterminate state.
+		cout << "m-power[off]" << endl;
+		cout << "m-tracing[off]" << endl;
+	}
+}
+
+void
 cmd_exit(vector<string> tokens)
 {
 	cmd_deinit(vector<string>());
@@ -304,7 +337,7 @@ cmd_deinit(vector<string> tokens)
 {
 	if (g_spinning)
 	{
-		cmd_stop_trace(tokens);
+		cmd_trace_stop(tokens);
 	}
 	if (g_joulescope.is_open())
 	{
@@ -317,46 +350,43 @@ cmd_deinit(vector<string> tokens)
 }
 
 void
-cmd_power_on(vector<string> tokens)
+cmd_power(vector<string> tokens)
 {
-	if (g_spinning)
+	if (tokens.size() > 1)
 	{
-		cout << "e-[Cannot talk to Joulescipe while streaming]" << endl;
-		return;
+		if (g_joulescope.is_open() == false)
+		{
+			cout << "e-[No Joulescopes are open]" << endl;
+			return;
+		}
+		if (tokens[1] == "on")
+		{
+			if (g_spinning)
+			{
+				cout << "e-[Cannot talk to Joulescope while tracing]" << endl;
+				return;
+			}
+			g_joulescope.power_on(true);
+		}
+		else if (tokens[1] == "off")
+		{
+			if (g_spinning)
+			{
+				cmd_trace_stop(tokens); // note: tokens are unused by cmd_trace_stop
+			}
+			g_joulescope.power_on(false);
+		}
+		else
+		{
+			cout << "e-[Valid options for 'power' are 'on' or 'off']" << endl;
+			return;
+		}
 	}
-	if (g_joulescope.is_open())
-	{
-		g_joulescope.power_on(true);
-		cout << "m-[Power on]" << endl;
-	}
-	else
-	{
-		cout << "e-[No Joulescopes are open]" << endl;
-	}
+	cout << "m-power[" << (g_joulescope.is_powered() ? "on" : "off") << "]" << endl;
 }
 
 void
-cmd_power_off(vector<string> tokens)
-{
-	if (g_spinning)
-	{
-		cmd_stop_trace(tokens);
-		//cout << "e-[Cannot talk to Joulescipe while streaming]" << endl;
-		//return;
-	}
-	if (g_joulescope.is_open())
-	{
-		g_joulescope.power_on(false);
-		cout << "m-[Power off]" << endl;
-	}
-	else
-	{
-		cout << "e-[No Joulescopes are open]" << endl;
-	}
-}
-
-void
-cmd_start_trace(vector<string> tokens)
+cmd_trace_start(vector<string> tokens)
 {
 	if (g_spinning)
 	{
@@ -398,13 +428,13 @@ cmd_start_trace(vector<string> tokens)
 		NULL);
 	if (g_hspin == NULL)
 	{
-		throw runtime_error("main::cmd_start_trace() ... Failed to CreateThread");
+		throw runtime_error("main::cmd_trace_start() ... Failed to CreateThread");
 	}
 	cout << "m-[Trace started]" << endl;
 }
 
 void
-cmd_stop_trace(vector<string> tokens)
+cmd_trace_stop(vector<string> tokens)
 {
 	if (g_spinning == false)
 	{
@@ -420,7 +450,7 @@ cmd_stop_trace(vector<string> tokens)
 	DWORD rv = WaitForSingleObject(g_hspin, 10000);
 	if (rv != WAIT_OBJECT_0)
 	{
-		throw runtime_error("main::cmd_stop_trace() ... Trace thread failed to exit");
+		throw runtime_error("main::cmd_trace_stop() ... Trace thread failed to exit");
 	}
 	g_joulescope.streaming_on(false);
 	flush_processed_samples_to_disk();
@@ -430,17 +460,47 @@ cmd_stop_trace(vector<string> tokens)
 }
 
 void
-cmd_enable_timer(vector<string> tokens)
+cmd_timestamps(vector<string> tokens)
 {
-	g_observe_timestamps = true;
-	cout << "m-[Observing timestamp signal]" << endl;
+	if (tokens.size() > 1)
+	{
+		if (tokens[1] == "on")
+		{
+			g_observe_timestamps = true;
+		}
+		else if (tokens[1] == "off")
+		{
+			g_observe_timestamps = false;
+		}
+		else
+		{
+			cout << "e-[Valid options for 'timestamps' are 'on' or 'off']" << endl;
+			return;
+		}
+	}
+	cout << "m-timestamps[" << (g_observe_timestamps ? "on" : "off") << "]" << endl;
 }
 
 void
-cmd_disable_timer(vector<string> tokens)
+cmd_updates(vector<string> tokens)
 {
-	g_observe_timestamps = false;
-	cout << "m-[Ignoring timestamp signal]" << endl;
+	if (tokens.size() > 1)
+	{
+		if (tokens[1] == "on")
+		{
+			g_updates = true;
+		}
+		else if (tokens[1] == "off")
+		{
+			g_updates = false;
+		}
+		else
+		{
+			cout << "e-[Valid options for 'updates' are 'on' or 'off']" << endl;
+			return;
+		}
+	}
+	cout << "m-updates[" << (g_updates ? "on" : "off") << "]" << endl;
 }
 
 void
@@ -489,6 +549,7 @@ main(int argc, char* argv[])
 	cout << "Version : " << VERSION << endl;
 	cout << "Head    : " << PYJOULESCOPE_GITHUB_HEAD << endl;
 	g_waiting_on_user = true;
+	cmd_config(std::vector<string>());
 	cout << "m-ready" << endl;
 	try {
 		while (g_waiting_on_user)
@@ -512,7 +573,7 @@ main(int argc, char* argv[])
 				}
 				else
 				{
-					itr->second(tokens);
+					itr->second.func(tokens);
 				}
 			}
 			cout << "m-ready" << endl;

@@ -108,6 +108,8 @@ public:
 	void open(std::wstring path);
 	void close(void);
 	bool is_open(void);
+	bool is_powered(void);
+	bool is_tracing(void);
 	// Control
 	void power_on(bool on);
 	void streaming_on(

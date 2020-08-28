@@ -41,6 +41,18 @@ Joulescope::is_open(void)
 	return m_open;
 }
 
+bool
+Joulescope::is_powered(void)
+{
+	return (m_state.settings.sensor_power == JoulescopeState::SensorPower::ON);
+}
+
+bool
+Joulescope::is_tracing(void)
+{
+	return (m_state.settings.streaming != JoulescopeState::Streaming::OFF);
+}
+
 void
 Joulescope::power_on(bool on)
 {
