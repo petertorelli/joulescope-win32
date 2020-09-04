@@ -1,5 +1,5 @@
 #include "main.hpp"
-#define VERSION "0.12.0"
+#define VERSION "0.14.0"
 #define PYJOULESCOPE_GITHUB_HEAD "97b9e90"
 
 /**
@@ -10,6 +10,7 @@
  */
 using namespace std;
 using namespace std::filesystem;
+using namespace boost;
 
 path          g_tmpdir(".");
 const path    g_power_fn("downsampled.raw");
@@ -33,7 +34,7 @@ CommandTable  g_commands = {
 	std::make_pair("power",       Command{ cmd_power,       "[on|off] Get/set output power state." }),
 	std::make_pair("samplerate",  Command{ cmd_samplerate,  "Set the sample rate to an integer multiple of 1e6." }),
 	std::make_pair("timestamps",  Command{ cmd_timestamps,  "[on|off] Get/set timestamping state." }),
-	std::make_pair("trace-start", Command{ cmd_trace_start, "(Filename) Start tracing to filename." }),
+	std::make_pair("trace-start", Command{ cmd_trace_start, "(path) Start tracing and save files in 'path' (quote if 'path' uses spaces)." }),
 	std::make_pair("trace-stop",  Command{ cmd_trace_stop,  "Stop tracing and close file." }),
 	std::make_pair("updates",     Command{ cmd_updates,     "[on|off] Get/set one-second update state." }),
 };
@@ -124,18 +125,21 @@ gpi0_check(bool& last, bool current)
 inline void
 heartbeat(void)
 {
-	// If any of the critical error stats are nonzero, print a heartbeat
-	if (
-		(g_updates && ((g_stats.m_total_samples % g_stats.m_sample_rate) == 0))
-		|| ((g_stats.m_total_dropped_pkts + g_stats.m_total_nan + g_stats.m_total_inf) > 0)
-		)
+	static uint64_t prev_dropped = 0;
+
+	// Has one second elapsed?
+	if ((g_stats.m_total_samples % g_stats.m_sample_rate) == 0)
 	{
-		cout << "Total samples " << g_stats.m_total_samples;
-		cout << " # dropped packets " << g_stats.m_total_dropped_pkts;
-		cout << " [ # NaN=" << g_stats.m_total_nan;
-		cout << ", # inf=" << g_stats.m_total_inf;
-		cout << " ]";
-		cout << endl;
+		if (g_updates || (g_stats.m_total_dropped_pkts > prev_dropped))
+		{
+			cout << "Total samples " << g_stats.m_total_samples;
+			cout << " # dropped packets " << g_stats.m_total_dropped_pkts;
+			cout << " [ # NaN=" << g_stats.m_total_nan;
+			cout << ", # inf=" << g_stats.m_total_inf;
+			cout << " ]";
+			cout << endl;
+		}
+		prev_dropped = g_stats.m_total_dropped_pkts;
 	}
 }
 
@@ -244,6 +248,7 @@ write_timestamps(void)
 	// Always write this file, even if no timestamps
 	path fn = g_tmpdir / g_cal_etime_fn;
 	fstream file;
+	file.exceptions(std::ifstream::failbit | std::ifstream::badbit);
 	file.open(fn, ios::out);
 	cout << "# timestamps " << g_stats.m_timestamps.size() << endl;
 	file << "[" << endl;
@@ -401,9 +406,9 @@ cmd_trace_start(vector<string> tokens)
 	g_raw_processor.callback_set(raw_processor_callback, nullptr);
 	// Seems awkward to do this here.
 	g_raw_processor.calibration_set(g_joulescope.m_calibration);
-
 	g_tmpdir = tokens.size() < 2 ? "." : tokens[1];
 	path fn = g_tmpdir / g_power_fn;
+	cout << "Filename " << fn << endl;
 	g_trace_file.open(fn, ios::binary | ios::out);
 	// Required by the framework
 	wcout << "FileRegister:name(" << wstring(g_power_fn.c_str()) << "), class(emon), type(js110)" << endl;
@@ -545,6 +550,8 @@ main(int argc, char* argv[])
 	signal(SIGTERM, sigint_handler);
 	signal(SIGBREAK, sigint_handler);
 
+	g_trace_file.exceptions(std::ifstream::failbit | std::ifstream::badbit);
+
 	cout << "Joulescope(R) JS110 Win32 Driver" << endl;
 	cout << "Version : " << VERSION << endl;
 	cout << "Head    : " << PYJOULESCOPE_GITHUB_HEAD << endl;
@@ -552,8 +559,10 @@ main(int argc, char* argv[])
 	cmd_config(std::vector<string>());
 	cout << "m-ready" << endl;
 	try {
+		vector<string> tokens;
 		while (g_waiting_on_user)
 		{
+			tokens.clear();
 			getline(cin, line);
 			// CTRL-C causes a fail that needs clearing before calling again
 			if (cin.fail() || cin.eof())
@@ -561,9 +570,11 @@ main(int argc, char* argv[])
 				cin.clear();
 				continue;
 			}
-			vector<string> tokens;
-			boost::trim(line);
-			boost::split(tokens, line, boost::is_any_of(" \t"));
+			trim(line);
+			tokenizer_t tok(line, delim_t("", " ", "\""));
+			for (tokenizer_t::iterator itr = tok.begin(); itr != tok.end(); ++itr) {
+				tokens.push_back(*itr);
+			}
 			if (!tokens.empty() && !tokens[0].empty())
 			{
 				CommandTable::iterator itr = g_commands.find(tokens[0]);

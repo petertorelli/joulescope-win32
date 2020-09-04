@@ -8,8 +8,11 @@
 
 #include <csignal>
 
-#include <boost\algorithm\string.hpp>
 #include <boost\algorithm\string\trim_all.hpp>
+#include <boost\tokenizer.hpp>
+
+typedef boost::escaped_list_separator<char> delim_t;
+typedef boost::tokenizer<delim_t> tokenizer_t;
 
 struct TraceStats
 {
