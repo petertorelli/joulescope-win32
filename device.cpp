@@ -80,7 +80,6 @@ EndpointIn::_open(void)
 	{
 		DBG("EndpointIn::_open() ... adding TransferOverlapped #" << i << "");
 		m_overlapped_free.push_back(new TransferOverlapped(m_event, m_transfer_size));
-		// TODO switch to smart pointers.
 	}
 }
 
@@ -421,7 +420,13 @@ ControlTransferAsync::close(void)
 	m_commands.clear();
 	size_t commands_len = commands.size(); //sic
 	if (!commands.empty())
-	{ // not sure why we do one first?
+	{
+		/**
+		 * Q: What is this first pop for?
+		 * From Matt: "The first command is "special". It is actually pending in the
+		 * WinUSB driver. The remainder are just in our local queue. We abort the
+		 * remainder immediately by calling the callback (without issuing to WinUSB)."
+		 */
 		DBG("ControlTransferAsync::close() ... clearing FIRST command in queue");
 		ControlTransferAsync_Command command(commands.front());
 		commands.pop_front();
@@ -432,13 +437,14 @@ ControlTransferAsync::close(void)
 		DBG("ControlTransferAsync::close() ... clearing NEXT command in queue");
 		ControlTransferAsync_cbk_fn cbk_fn = commands.front().cbk_fn;
 		WINUSB_SETUP_PACKET setup_packet = commands.front().setup_packet;
-		//buffer unused
 		commands.pop_front();
-		// BUGBUG? why aren't we finishing?
-			// here he passes False instead of a stop_code UNDEFINED
 		cbk_fn(ControlTransferResponse(setup_packet, DeviceEvent::UNDEFINED, vector<UCHAR>()));
 	}
-	// BUGBUG? If there were commands we never close the handle?
+	/**
+	 * Q: Why aren't we finishing?
+	 * From Matt: "If commands are outstanding, do not close the handle immediately.
+	 * Otherwise close on the last command in _close_event."
+	 */
 	if (commands_len == 0)
 	{
 		if (m_event)
@@ -567,7 +573,6 @@ ControlTransferAsync::_issue(void)
 			m_stop_code = DeviceEvent::COMMUNICATION_ERROR;
 			DBG("ControlTransferAsync::_issue() ... stop_code is none, setting to COMMUNICATION_ERROR (" << (int)m_stop_code << ")");
 		}
-		// whoa, result just got cast into DeviceEvent
 		DBG("ControlTransferAsync::_issue() ... cbk_fn()");
 		cbk_fn(ControlTransferResponse(setup_packet, DeviceEvent::FORCE_CAST_FROM_GETLASTERROR_BUG, vector<UCHAR>()));
 		DBG("ControlTransferAsync::_issue() ... done, return 'false'");
@@ -622,7 +627,6 @@ ControlTransferAsync::_finish(ControlTransferAsync_Command command)
 			buffer = m_overlapped->m_buffer;
 		}
 	}
-	// whoa, result just got cast into DeviceEvent again
 	ControlTransferResponse response(setup_packet, DeviceEvent::FORCE_CAST_FROM_GETLASTERROR_BUG, buffer);
 	DBG("ControlTransferAsync::_finish() ... calling cbk_fn");
 	cbk_fn(response);
@@ -704,17 +708,9 @@ WinUsbDevice::open(wstring _path, event_callback_fn_t* event_callback_fn)
 	close();
 	DBG("WinUsbDevice::open() - main open");
 	m_event_callback_fn = event_callback_fn;
-	//m_event = CreateEvent(NULL, TRUE, FALSE, NULL);
-	//DBG("WinUsbDevice::open CreateEvent(event=" << m_event << ")");
 
 	try
 	{
-		/*
-		if (m_event == NULL)
-		{
-			throw runtime_error("could not create event");
-		}
-		*/
 		m_file = CreateFile(
 			m_path.c_str(),
 			GENERIC_WRITE | GENERIC_READ,
@@ -1067,13 +1063,16 @@ WinUsbDevice::process(float timeout)
 			}
 		}
 		DBG("WinUsbDevice::process() ... process our control transfer");
-		m_control_transfer->process();
-		if ((m_control_transfer->m_stop_code != DeviceEvent::NONE) && ((int)m_control_transfer->m_stop_code > 0))
+		if (m_control_transfer != nullptr) // Jetperch:pyjoulescope HEAD f19c30e
 		{
-			// pipe_id is None (or 0 in C++ here)
-			string msg = string_format("Control pipe %02x stopped: %02x", pipe_id, m_control_transfer->m_stop_code);
-			LOG(msg);
-			_abort((int)m_control_transfer->m_stop_code, msg);
+			m_control_transfer->process();
+			if ((m_control_transfer->m_stop_code != DeviceEvent::NONE) && ((int)m_control_transfer->m_stop_code > 0))
+			{
+				// pipe_id is None (or 0 in C++ here)
+				string msg = string_format("Control pipe %02x stopped: %02x", pipe_id, m_control_transfer->m_stop_code);
+				LOG(msg);
+				_abort((int)m_control_transfer->m_stop_code, msg);
+			}
 		}
 	}
 }
