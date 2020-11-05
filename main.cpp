@@ -1,6 +1,6 @@
 #include "main.hpp"
-#define VERSION "0.14.0"
-#define PYJOULESCOPE_GITHUB_HEAD "97b9e90"
+#define VERSION "0.15.0"
+#define PYJOULESCOPE_GITHUB_HEAD "3a6ff5f"
 
 /**
  * TODO
