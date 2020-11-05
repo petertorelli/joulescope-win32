@@ -361,6 +361,8 @@ Joulescope::find_joulescope_by_serial_number(string serial_number)
 	{
 		for (size_t i = 0; i < paths.size(); ++i)
 		{
+			// Caution: microsoft does not recommend this
+			// https://github.com/jetperch/js110_statistics/blob/55a9817bb3e6ddc9627c1bcc3ba7702bdad0554b/source/js110_statistics.c#L180
 			boost::split(tokens, paths[i], boost::is_any_of("#"));
 			if (tokens.size() > 2)
 			{
