@@ -7,12 +7,12 @@
 #define SUPPRESS_HISTORY_MAX    8
 #define SUPPRESS_WINDOW_MAX    12
 #define SUPPRESS_POST_MAX       8
-#define I_RANGE_D_LENGTH        3
 #define _I_RANGE_MISSING        8
 
-#define SUPPRESS_MODE_OFF  0
-#define SUPPRESS_MODE_MEAN 1
-#define SUPPRESS_MODE_NAN  3
+#define SUPPRESS_MODE_OFF    0
+#define SUPPRESS_MODE_MEAN   1
+#define SUPPRESS_MODE_INTERP 2 // see jetperch:pyjoulescope efaa061
+#define SUPPRESS_MODE_NAN    3
 
 
 #define SUPPRESS_SAMPLES_MAX _SUPPRESS_SAMPLES_MAX
@@ -33,10 +33,11 @@ typedef void (*raw_processor_cbk_fn)(void* user_data, float cal_i, float cal_v, 
 
 class RawProcessor {
 public:
-	float   d_cal[_SUPPRESS_SAMPLES_MAX][2];     // as i, v
-	uint8_t d_bits[_SUPPRESS_SAMPLES_MAX];     // packed bits : 7 : 6 = 0, 5 = voltage_lsb, 4 = current_lsb, 3 : 0 = i_range
-	float   d_history[SUPPRESS_HISTORY_MAX][2];  // as i, v
+	float   d_cal[_SUPPRESS_SAMPLES_MAX][2];    // as i, v
+	uint8_t d_bits[_SUPPRESS_SAMPLES_MAX];      // packed bits : 7 : 6 = 0, 5 = voltage_lsb, 4 = current_lsb, 3 : 0 = i_range
+	float   d_history[SUPPRESS_HISTORY_MAX][2]; // as i, v
 	uint8_t d_history_idx;
+	uint8_t _suppress_start_idx;
 
 	js_stream_buffer_calibration_s _cal;
 
@@ -44,7 +45,8 @@ public:
 	void* _cbk_user_data;
 
 	int32_t  is_skipping;
-	uint32_t _idx_out;
+	float    cal_i_pre;
+	int32_t  _idx_out;
 	uint64_t sample_count;
 	uint64_t sample_missing_count;  // based upon sample_id
 	uint64_t skip_count;            // number of sample skips
@@ -55,6 +57,7 @@ public:
 	int32_t _suppress_samples_pre;     // the number of samples to use before range change
 	int32_t _suppress_samples_window;  // the total number of samples to suppress after range change
 	int32_t _suppress_samples_post;
+	uint8_t (*_suppress_matrix)[9][9];
 
 	int32_t suppress_count; // the suppress counter, 1 = replace previous
 	uint8_t _suppress_mode;
