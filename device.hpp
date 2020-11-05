@@ -80,10 +80,12 @@ struct TransferOverlapped
 	{
 		ZeroMemory(&m_ov, sizeof(m_ov));
 		m_ov.hEvent = m_event;
-		// TODO: Revisit the Python, it properly resizes this buffer duringcontrol transfers
-		// TODO: It is unlikely we will have a bug here since there are limited ctrl transfers
-		// TODO: but if we exceed 4096B it might fail. 
-		// TODO: This should be sized according to the request!
+		/**
+		 * TODO: This should be sized according to the request.
+		 * Revisit the Python, it properly resizes this buffer duringcontrol transfers
+		 * It is unlikely we will have a bug here since there are limited ctrl transfers
+		 * but if we exceed 4096B it might fail.
+		 */
 		m_buffer.resize(m_size);
 	};
 	OVERLAPPED         m_ov;
@@ -278,7 +280,6 @@ private:
 	HANDLE m_winusb;
 	HANDLE m_event;
 	TransferOverlapped *m_overlapped;
-	// TODO: is buffer being passed by value, reference, or copy? man C++ confuses me... deep copy?
 	std::deque<ControlTransferAsync_Command> m_commands;
 	time_t m_time_start;
 };
@@ -301,7 +302,6 @@ public:
 	void close(void);
 	void _update_event_list(void);
 	std::wstring path(void) { return m_path; };
-	// TODO: split serial #
 	std::wstring serial_number(void) { return m_path; };
 	bool control_transfer_out(
 		ControlTransferAsync_cbk_fn cbk_fn,
