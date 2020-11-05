@@ -2,9 +2,11 @@
 
 using namespace std;
 
+// see jetperch:pyjoulescope 272cb6b
 // experimentally determined charge coupling durations in samples at 2 MSPS
-uint8_t SUPPRESS_MATRIX[9][9] = {
-	//   0, 1, 2, 3, 4, 5, 6, 7, 8   // from this current select
+// These values are aggressive and result in min/max distortion
+uint8_t SUPPRESS_MATRIX_M[9][9] = {  // [to][from]
+//   0, 1, 2, 3, 4, 5, 6, 7, 8   // from this current select
 	{0, 5, 5, 5, 5, 5, 6, 6, 0}, // to 0
 	{3, 0, 5, 5, 5, 6, 7, 8, 0}, // to 1
 	{4, 4, 0, 6, 6, 7, 7, 8, 0}, // to 2
@@ -16,6 +18,18 @@ uint8_t SUPPRESS_MATRIX[9][9] = {
 	{0, 0, 0, 0, 0, 0, 0, 0, 0}, // to 8 (missing)
 };
 
+uint8_t SUPPRESS_MATRIX_N[9][9] = {
+//   0, 1, 2, 3, 4, 5, 6, 7, 8   // from this current select
+	{0, 5, 7, 7, 7, 7, 7, 8, 0}, // to 0
+	{3, 0, 7, 7, 7, 7, 7, 8, 0}, // to 1
+	{5, 5, 0, 7, 7, 7, 7, 8, 0}, // to 2
+	{5, 5, 5, 0, 7, 7, 7, 8, 0}, // to 3
+	{5, 5, 5, 5, 0, 7, 7, 8, 0}, // to 4
+	{5, 5, 5, 5, 5, 0, 7, 8, 0}, // to 5
+	{5, 5, 5, 5, 5, 5, 0, 8, 0}, // to 6
+	{0, 0, 0, 0, 0, 0, 0, 0, 0}, // to 7 (off)
+	{0, 0, 0, 0, 0, 0, 0, 0, 0}, // to 8 (missing)
+};
 
 void
 cal_init(js_stream_buffer_calibration_s* cal_ptr)
@@ -36,10 +50,11 @@ cal_init(js_stream_buffer_calibration_s* cal_ptr)
 RawProcessor::RawProcessor() {
 	// __cinit__
 	cal_init(&_cal);
-	_suppress_samples_pre = 2;
-	_suppress_samples_window = 255;  // lookup = 'n'
-	_suppress_samples_post = 2;
-	_suppress_mode = SUPPRESS_MODE_MEAN;
+	_suppress_samples_window = 0;  // use N
+	_suppress_mode = SUPPRESS_MODE_INTERP;
+	_suppress_samples_pre = 1;
+	_suppress_samples_post = 1;
+	_suppress_matrix = &SUPPRESS_MATRIX_N;
 	// __init__
 	reset();
 }
@@ -50,6 +65,7 @@ RawProcessor::callback_set(raw_processor_cbk_fn cbk, void* user_data) {
 	_cbk_user_data = user_data;
 }
 /*
+* TODO: we don't support changing suppression mode yet
 string supress_mode(void) {
 @suppress_mode.setter
 def suppress_mode(self, value) :
@@ -71,21 +87,23 @@ RawProcessor::reset(void) {
 	sample_toggle_mask = 0;
 	_voltage_range = 0;
 	_idx_out = 0;
+	_suppress_start_idx = 0;
 
 	for (idx = 0; idx < SUPPRESS_HISTORY_MAX; ++idx)
 	{
-		d_history[idx][0] = 0.0;
-		d_history[idx][1] = 0.0;
+		d_history[idx][0] = NAN;
+		d_history[idx][1] = NAN;
 	}
 	d_history_idx = 0;
+	cal_i_pre = NAN;
 }
 
 void
 RawProcessor::calibration_set(js_stream_buffer_calibration_s cal)
 {
 	_cal = cal;
-	_cal.current_offset[7] = 0.0; // ASKMATT
-	_cal.current_gain[7] = 0.0; // ASKMATT
+	_cal.current_offset[7] = 0.0;
+	_cal.current_gain[7] = 0.0;
 }
 
 void
@@ -108,8 +126,8 @@ RawProcessor::calibration_set(
 		_cal.current_offset[i] = current_offset[i];
 		_cal.current_gain[i] = current_gain[i];
 	}
-	_cal.current_offset[7] = 0.0; // ASKMATT
-	_cal.current_gain[7] = 0.0; // ASKMATT
+	_cal.current_offset[7] = 0.0;
+	_cal.current_gain[7] = 0.0;
 	for (size_t i(0); i < 2; ++i)
 	{
 		_cal.voltage_offset[i] = voltage_offset[i];
@@ -124,12 +142,12 @@ RawProcessor::process(uint16_t raw_i, uint16_t raw_v)
 	uint8_t suppress_window;
 	int32_t suppress_idx;
 	int32_t idx;
-	int32_t suppress_filter_counter;
 	uint8_t bits;
 	uint8_t i_range;
 	uint16_t sample_toggle_current;
 	uint64_t sample_sync_count;
 	float cal_i;
+	float cal_i_step;
 	float cal_v;
 	
 	is_missing = 0;
@@ -153,24 +171,6 @@ RawProcessor::process(uint16_t raw_i, uint16_t raw_v)
 		contiguous_count += 1;
 	}
 	bits = (i_range & 0x0f) | ((raw_i & 0x0004) << 2) | ((raw_v & 0x0004) << 3);
-
-	// process i_range for glitch suppression
-	if (i_range != _i_range_last)
-	{
-		suppress_window = SUPPRESS_MATRIX[i_range][_i_range_last];
-		if (suppress_window && _suppress_samples_window != 255)
-		{
-			suppress_window = _suppress_samples_window;
-		}
-		if (suppress_window)
-		{
-			idx = _idx_out + suppress_window + _suppress_samples_post;
-			if (idx > suppress_count)
-			{
-				suppress_count = idx;
-			}
-		}
-	}
 
 	sample_toggle_current = (raw_v >> 1) & 0x1;
 	raw_i = raw_i >> 2;
@@ -206,6 +206,42 @@ RawProcessor::process(uint16_t raw_i, uint16_t raw_v)
 		d_cal[_idx_out][1] = cal_v;
 	}
 
+	// process i_range for glitch suppression
+	if ((i_range != _i_range_last) && (SUPPRESS_MODE_OFF != _suppress_mode))
+	{
+		if (_suppress_matrix != nullptr)
+		{
+			suppress_window = _suppress_matrix[0][i_range][_i_range_last];
+		}
+		else
+		{
+			suppress_window = _suppress_samples_window;
+		}
+		if (suppress_window)
+		{
+			idx = suppress_window + _suppress_samples_post;
+			if (idx > suppress_count)
+			{
+				suppress_count = idx;
+			}
+		}
+		if ((SUPPRESS_MODE_MEAN == _suppress_mode) && (_idx_out == 0))
+		{
+			// sum samples over pre for mean computation
+			cal_i_pre = 0;
+			idx = d_history_idx + (SUPPRESS_HISTORY_MAX - _suppress_samples_pre);
+			for (suppress_idx = 0; suppress_idx < _suppress_samples_pre; ++suppress_idx)
+			{
+				while (idx >= SUPPRESS_HISTORY_MAX)
+				{
+					idx -= SUPPRESS_HISTORY_MAX;
+					cal_i_pre += d_history[idx][0];
+					idx += 1;
+				}
+			}
+		}
+	}
+
 	// Suppress Joulescope range switching glitch (at least for now).
 	if (suppress_count > 0)
 	{
@@ -222,41 +258,45 @@ RawProcessor::process(uint16_t raw_i, uint16_t raw_v)
 					_idx_out -= 1;
 				}
 			}
-
+			if (SUPPRESS_MODE_INTERP == _suppress_mode)
+			{
+				if (!isfinite(cal_i_pre))
+				{
+					cal_i_pre = cal_i;
+				}
+				cal_i_step = (cal_i - cal_i_pre) / (_idx_out + 1);
+				for (idx = 0; idx < _idx_out; ++idx)
+				{
+					sample_count += 1;
+					cal_i_pre += cal_i_step;
+					_cbk_fn(_cbk_user_data, cal_i_pre, d_cal[idx][1], d_bits[idx]);
+					_history_insert(cal_i_pre, d_cal[idx][1]);
+				}
+				cal_i_pre = cal_i;
+			}
 			if (SUPPRESS_MODE_MEAN == _suppress_mode)
 			{
-				suppress_filter_counter = 0;
-				cal_i = 0;
-
-				// sum samples over pre for mean computation
-				idx = d_history_idx - _suppress_samples_pre;
-				while (idx < 0)
-				{
-					idx += SUPPRESS_HISTORY_MAX;
-				}
-				for (suppress_idx = 0; suppress_idx < _suppress_samples_pre; ++suppress_idx)
-				{
-					while (idx >= SUPPRESS_HISTORY_MAX)
-					{
-						idx -= SUPPRESS_HISTORY_MAX;
-					}
-					cal_i += d_history[idx][0];
-					suppress_filter_counter += 1;
-					idx += 1;
-				}
-
 				// sum samples over post for mean computation
+				suppress_idx = _suppress_samples_pre;
+				if (!isfinite(cal_i_pre))
+				{
+					suppress_idx = 0;
+					cal_i_pre = 0;
+				}
 				for (idx = _idx_out + 1 - _suppress_samples_post; idx < _idx_out + 1; ++idx)
 				{
-					cal_i += d_cal[idx][0];
-					suppress_filter_counter += 1;
+					cal_i_pre += d_cal[idx][0];
+					suppress_idx += 1;
 				}
-
-				if (suppress_filter_counter)
+				if (suppress_idx)
 				{
-					// compute mean
-					cal_i = (float)(cal_i / suppress_filter_counter);
+					cal_i = cal_i_pre / suppress_idx;
 				}
+				else
+				{
+					cal_i = NAN;
+				}
+				cal_i_pre = cal_i;
 
 				// update suppressed samples
 				for (idx = 0; idx < _idx_out + 1 - _suppress_samples_post; ++idx)
@@ -268,24 +308,16 @@ RawProcessor::process(uint16_t raw_i, uint16_t raw_v)
 			}
 			else if (SUPPRESS_MODE_NAN == _suppress_mode)
 			{
-				for (suppress_idx = 0; suppress_idx < _idx_out + 1 - _suppress_samples_post; ++suppress_idx)
+				for (suppress_idx = 0; suppress_idx < _idx_out + 1 /* _suppress_samples_post=0 */; ++suppress_idx)
 				{
 					sample_count += 1;
 					_cbk_fn(_cbk_user_data, NAN, NAN, d_bits[suppress_idx]);
 				}
 
 			}
-			else if (SUPPRESS_MODE_OFF == _suppress_mode)
-			{
-				for (suppress_idx = 0; suppress_idx < _idx_out + 1 - _suppress_samples_post; ++suppress_idx)
-				{
-					sample_count += 1;
-					_cbk_fn(_cbk_user_data, d_cal[suppress_idx][0], d_cal[suppress_idx][1], d_bits[suppress_idx]);
-					_history_insert(d_cal[suppress_idx][0], d_cal[suppress_idx][1]);
-				}
-			}
 			else
 			{
+				// SUPPRESS_MODE_OFF should never get here
 				throw runtime_error("unsupported suppress_mode");
 			}
 
@@ -307,6 +339,7 @@ RawProcessor::process(uint16_t raw_i, uint16_t raw_v)
 	}
 	else
 	{
+		cal_i_pre = cal_i;
 		_history_insert(cal_i, cal_v);
 		sample_count += 1;
 		_cbk_fn(_cbk_user_data, cal_i, cal_v, bits);
