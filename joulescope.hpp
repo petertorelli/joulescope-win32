@@ -138,9 +138,7 @@ private:
 	void update_extio(void);
 	void update_settings(void);
 public:
-	// TODO: Make a 'process()' function for this object?
 	WinUsbDevice m_device;
-	// TODO: the application gets the calibration from the joulescope and sends it to the raw processor
 	js_stream_buffer_calibration_s m_calibration;
 private:
 	JoulescopeState m_state;
