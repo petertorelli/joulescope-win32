@@ -258,7 +258,7 @@ RawProcessor::process(uint16_t raw_i, uint16_t raw_v)
 					_idx_out -= 1;
 				}
 			}
-			if (SUPPRESS_MODE_INTERP == _suppress_mode)
+			else if (SUPPRESS_MODE_INTERP == _suppress_mode)
 			{
 				if (!isfinite(cal_i_pre))
 				{
