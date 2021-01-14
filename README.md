@@ -9,18 +9,16 @@ Starting the program initiates a simple command-line interface. It is intended t
 1. `exit` - De-initialize the hardware and exit the app.
 2. `init [SERIAL#]` - Initialize a JS110 by serial number, or the first one found.
 3. `deinit` - Stop tracing, release the USB interface, close any files (does not exit).
-4. `power-on` - Turn on power to the device under test.
-5. `power-off` - Turn off the power.
-6. `start-trace` - Begin logging trace samples at the requested sample rate to a file named `./downsampled.raw` (TODO: allow user to specify this).
-7. `stop-trace` - Stop tracing and close the trace file.
-8. `enable-timer` - Log samples with GPIO falling edge to the file `./timestamps-emon.json`. Multiple falling edges in a sample are counted as one for that sample.
-9. `disable-timer` - Stop logging falling edges.
-10. `samplerate` - Set the sample rate in Hz. Must be a factor of 1,000,000.
+4. `power [on|off]` - Turn on power to the device under test, or indicate status
+6. `trace-start [path] [prefix] ` - Begin logging trace samples at the requested sample rate at a path starting with a prefix and ending with `-energy.bin`. Path defaults to "." and prefix "js110".
+7. `trace-stop` - Stop tracing and close the trace file.
+8. `timestamps [on|off]` - Log samples with GPIO0 falling edge to the file `[path]/[prefix]-timestamps.json`. Multiple falling edges in a downsample are counted as one for that sample.
+10. `samplerate [HZ]` - Set the sample rate in Hz, or report back current rate. Must be a factor of 1,000,000.
 
 The output energy file format is:
 ~~~
 1 UInt8 - Trace version
-1 UInt32 - Sample rate
+1 Float32LE - Sample rate, in Hz
 N Float32LE - N energy samples, in Joules
 ~~~
 
@@ -34,6 +32,3 @@ The CLI downsamples based on `samplerate`, which is a command that can get or se
 
 The sampling code spins in its own thread until the command line parser thread recieves an `exit` or `stop-trace` command.
 
-# Caveats & TODOs
-
-This is alpha quality code, there is sparse commenting and no help screen. Important areas of attention start with `TODO` in the comments.
