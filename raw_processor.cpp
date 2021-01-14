@@ -258,7 +258,7 @@ RawProcessor::process(uint16_t raw_i, uint16_t raw_v)
 					_idx_out -= 1;
 				}
 			}
-			else if (SUPPRESS_MODE_INTERP == _suppress_mode)
+			if (SUPPRESS_MODE_INTERP == _suppress_mode)
 			{
 				if (!isfinite(cal_i_pre))
 				{
@@ -274,7 +274,7 @@ RawProcessor::process(uint16_t raw_i, uint16_t raw_v)
 				}
 				cal_i_pre = cal_i;
 			}
-			if (SUPPRESS_MODE_MEAN == _suppress_mode)
+			else if (SUPPRESS_MODE_MEAN == _suppress_mode)
 			{
 				// sum samples over post for mean computation
 				suppress_idx = _suppress_samples_pre;
