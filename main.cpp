@@ -31,8 +31,9 @@ using namespace std::filesystem;
 using namespace boost;
 
 path          g_tmpdir(".");
-const path    g_power_fn("downsampled.raw");
-const path    g_cal_etime_fn("timestamps-emon.json");
+path          g_pfx("js110");
+const path    g_sfx_energy("-energy.bin");
+const path    g_sfx_timestamps("-timestamps.json");
 fstream       g_trace_file;
 bool          g_spinning(false);
 bool          g_waiting_on_user(false);
@@ -44,41 +45,41 @@ Joulescope    g_joulescope;
 TraceStats    g_stats;
 CommandTable  g_commands = {
 	std::make_pair("config",      Command{ cmd_config,      "Report each configuration option." }),
-//	std::make_pair("debug",       Command{ cmd_debug,       "Enable debug messages, if any." }),
-	std::make_pair("deinit",      Command{ cmd_deinit,      "De-initialize the current JS110." }),
-	std::make_pair("exit",        Command{ cmd_exit,        "De-initialize (if necessary) and exit." }),
-	std::make_pair("help",        Command{ cmd_help,        "Print this help." }),
-	std::make_pair("init",        Command{ cmd_init,        "[serial] Find the first JS110 (or by serial #) and initialize it." }),
-	std::make_pair("power",       Command{ cmd_power,       "[on|off] Get/set output power state." }),
-	std::make_pair("samplerate",  Command{ cmd_samplerate,  "Set the sample rate to an integer multiple of 1e6." }),
-	std::make_pair("timestamps",  Command{ cmd_timestamps,  "[on|off] Get/set timestamping state." }),
-	std::make_pair("trace-start", Command{ cmd_trace_start, "(path) Start tracing and save files in 'path' (quote if 'path' uses spaces)." }),
-	std::make_pair("trace-stop",  Command{ cmd_trace_stop,  "Stop tracing and close file." }),
-	std::make_pair("updates",     Command{ cmd_updates,     "[on|off] Get/set one-second update state." }),
+	//	std::make_pair("debug",       Command{ cmd_debug,       "Enable debug messages, if any." }),
+		std::make_pair("deinit",      Command{ cmd_deinit,      "De-initialize the current JS110." }),
+		std::make_pair("exit",        Command{ cmd_exit,        "De-initialize (if necessary) and exit." }),
+		std::make_pair("help",        Command{ cmd_help,        "Print this help." }),
+		std::make_pair("init",        Command{ cmd_init,        "[serial] Find the first JS110 (or by serial #) and initialize it." }),
+		std::make_pair("power",       Command{ cmd_power,       "[on|off] Get/set output power state." }),
+		std::make_pair("samplerate",  Command{ cmd_samplerate,  "Set the sample rate to an integer multiple of 1e6." }),
+		std::make_pair("timestamps",  Command{ cmd_timestamps,  "[on|off] Get/set timestamping state." }),
+		std::make_pair("trace-start", Command{ cmd_trace_start, "(path) (prefix) Start tracing and save files in 'path' (quote if 'path' uses spaces)." }),
+		std::make_pair("trace-stop",  Command{ cmd_trace_stop,  "Stop tracing and close file." }),
+		std::make_pair("updates",     Command{ cmd_updates,     "[on|off] Get/set one-second update state." }),
 };
 
 /*
  * going old school here so there can be no question
  */
-/**
- * The EndpointIn data_fn callback puts raw samples into the g_raw_*
- * buffers. The EndpointIn process_fn reads them out and calls the
- * RawProcessor, putting the resulting float values into another buffer.
- * The raw buffers are flushed by the process_fn function. If process_fn
- * can't respond fast enough, "Buffer overflow" is printed to the console.
- * The RawProcessor callback flushes the float buffer every time it fills.
- * It is up to the function that manages the file to flush the processed
- * sample buffer to disk before closing.
- *
- * Here's the flow:
- *
- * endpoint_data_fn_callback -> get a packet and call ...
- * queue_raw_sample -> queue the raw samples and complain if we overvlow.
- * endpoint_process_fn_callback -> call RawProcessor.process in a loop...
- * raw_processor_callback -> queue a calibrated sample from RawProcessor
- * flush_processed_samples_to_disk --> writes calibrated samples to disk
- */
-// TODO: Should the ratio of buffer sizes depend on the sample rate?
+ /**
+  * The EndpointIn data_fn callback puts raw samples into the g_raw_*
+  * buffers. The EndpointIn process_fn reads them out and calls the
+  * RawProcessor, putting the resulting float values into another buffer.
+  * The raw buffers are flushed by the process_fn function. If process_fn
+  * can't respond fast enough, "Buffer overflow" is printed to the console.
+  * The RawProcessor callback flushes the float buffer every time it fills.
+  * It is up to the function that manages the file to flush the processed
+  * sample buffer to disk before closing.
+  *
+  * Here's the flow:
+  *
+  * endpoint_data_fn_callback -> get a packet and call ...
+  * queue_raw_sample -> queue the raw samples and complain if we overvlow.
+  * endpoint_process_fn_callback -> call RawProcessor.process in a loop...
+  * raw_processor_callback -> queue a calibrated sample from RawProcessor
+  * flush_processed_samples_to_disk --> writes calibrated samples to disk
+  */
+  // TODO: Should the ratio of buffer sizes depend on the sample rate?
 constexpr auto RAW_BUFFER_SIZE(1024 * 128);
 constexpr auto CAL_BUFFER_SIZE(1024 * 64);
 // Raw data
@@ -264,10 +265,12 @@ write_timestamps(void)
 {
 	// TODO: since we already use JsonCpp, why not use that?
 	// Always write this file, even if no timestamps
-	path fn = g_tmpdir / g_cal_etime_fn;
+	path fn = g_pfx;
+	fn += g_sfx_timestamps;
+	path fp = g_tmpdir / fn;
 	fstream file;
 	file.exceptions(std::ifstream::failbit | std::ifstream::badbit);
-	file.open(fn, ios::out);
+	file.open(fp, ios::out);
 	cout << "# timestamps " << g_stats.m_timestamps.size() << endl;
 	file << "[" << endl;
 	for (size_t i(0); i < g_stats.m_timestamps.size(); ++i)
@@ -282,7 +285,7 @@ write_timestamps(void)
 	file << "]" << endl;
 	file.close();
 	// Required by the framework
-	wcout << "FileRegister:name(" << wstring(g_cal_etime_fn.c_str()) << "), class(etime), type(js110)" << endl;
+	wcout << "FileRegister:name(" << wstring(fn.c_str()) << "), class(etime), type(js110)" << endl;
 }
 
 void
@@ -425,11 +428,14 @@ cmd_trace_start(vector<string> tokens)
 	// Seems awkward to do this here.
 	g_raw_processor.calibration_set(g_joulescope.m_calibration);
 	g_tmpdir = tokens.size() < 2 ? "." : tokens[1];
-	path fn = g_tmpdir / g_power_fn;
-	cout << "Filename " << fn << endl;
-	g_trace_file.open(fn, ios::binary | ios::out);
+	g_pfx = tokens.size() < 3 ? "js110" : tokens[2];
+	path fn = g_pfx;
+	fn += g_sfx_energy;
+	path fp = g_tmpdir / fn;
+	cout << "Filename " << fp << endl;
+	g_trace_file.open(fp, ios::binary | ios::out);
 	// Required by the framework
-	wcout << "FileRegister:name(" << wstring(g_power_fn.c_str()) << "), class(emon), type(js110)" << endl;
+	wcout << "FileRegister:name(" << wstring(fn.c_str()) << "), class(emon), type(js110)" << endl;
 	union {
 		float f;
 		uint8_t b[4];
@@ -560,7 +566,7 @@ int
 main(int argc, char* argv[])
 {
 	string line;
-	
+
 	setvbuf(stdout, NULL, _IONBF, 0);
 	setvbuf(stderr, NULL, _IONBF, 0);
 
