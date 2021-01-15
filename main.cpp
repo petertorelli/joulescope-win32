@@ -18,7 +18,7 @@
 #include "main.hpp"
 // Note: Only the device and raw_processor are critical.
 #define PYJOULESCOPE_GITHUB_HEAD "6b92e38"
-#define VERSION "1.0.0"
+#define VERSION "1.1.0"
 
 /**
  * TODO
@@ -46,16 +46,17 @@ TraceStats    g_stats;
 CommandTable  g_commands = {
 	std::make_pair("config",      Command{ cmd_config,      "Report each configuration option." }),
 	//	std::make_pair("debug",       Command{ cmd_debug,       "Enable debug messages, if any." }),
-		std::make_pair("deinit",      Command{ cmd_deinit,      "De-initialize the current JS110." }),
-		std::make_pair("exit",        Command{ cmd_exit,        "De-initialize (if necessary) and exit." }),
-		std::make_pair("help",        Command{ cmd_help,        "Print this help." }),
-		std::make_pair("init",        Command{ cmd_init,        "[serial] Find the first JS110 (or by serial #) and initialize it." }),
-		std::make_pair("power",       Command{ cmd_power,       "[on|off] Get/set output power state." }),
-		std::make_pair("samplerate",  Command{ cmd_samplerate,  "Set the sample rate to an integer multiple of 1e6." }),
-		std::make_pair("timestamps",  Command{ cmd_timestamps,  "[on|off] Get/set timestamping state." }),
-		std::make_pair("trace-start", Command{ cmd_trace_start, "(path) (prefix) Start tracing and save files in 'path' (quote if 'path' uses spaces)." }),
-		std::make_pair("trace-stop",  Command{ cmd_trace_stop,  "Stop tracing and close file." }),
-		std::make_pair("updates",     Command{ cmd_updates,     "[on|off] Get/set one-second update state." }),
+	std::make_pair("deinit",      Command{ cmd_deinit,      "De-initialize the current JS110." }),
+	std::make_pair("exit",        Command{ cmd_exit,        "De-initialize (if necessary) and exit." }),
+	std::make_pair("help",        Command{ cmd_help,        "Print this help." }),
+	std::make_pair("init",        Command{ cmd_init,        "[serial] Find the first JS110 (or by serial #) and initialize it." }),
+	std::make_pair("power",       Command{ cmd_power,       "[on|off] Get/set output power state." }),
+	std::make_pair("samplerate",  Command{ cmd_samplerate,  "Set the sample rate to an integer multiple of 1e6." }),
+	std::make_pair("timestamps",  Command{ cmd_timestamps,  "[on|off] Get/set timestamping state." }),
+	std::make_pair("trace-start", Command{ cmd_trace_start, "(path) (prefix) Start tracing and save files in 'path' (quote if 'path' uses spaces)." }),
+	std::make_pair("trace-stop",  Command{ cmd_trace_stop,  "Stop tracing and close file." }),
+	std::make_pair("updates",     Command{ cmd_updates,     "[on|off] Get/set one-second update state." }),
+	std::make_pair("voltage",     Command{ cmd_voltage,     "Report the internal 2s voltage mean in mv." }),
 };
 
 /*
@@ -546,6 +547,14 @@ cmd_samplerate(vector<string> tokens)
 		g_stats.set_samplerate(stoi(tokens[1]));
 	}
 	cout << "m-samplerate[" << g_stats.m_sample_rate << "]" << endl;
+}
+
+void
+cmd_voltage(vector<string> tokens)
+{
+	unsigned int mv = g_joulescope.get_voltage();
+	cout << "The JS110 voltage is updated every 2 s when powered" << endl;
+	cout << "m-voltage[" << mv << "]" << endl;
 }
 
 void

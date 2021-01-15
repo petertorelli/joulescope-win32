@@ -137,6 +137,8 @@ public:
 	// Device discovery
 	std::wstring find_joulescope_by_serial_number(std::string serial_number = "");
 	std::vector<std::wstring> scan(void);
+	// 2-second stat update voltage, in mV
+	unsigned int get_voltage(void);
 private:
 	js_stream_buffer_calibration_s calibration_read_raw(void);
 	std::vector<std::wstring> guid_to_paths(GUID* pGuid);

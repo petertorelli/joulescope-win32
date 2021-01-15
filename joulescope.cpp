@@ -89,6 +89,35 @@ Joulescope::power_on(bool on)
 	update_settings();
 }
 
+unsigned int
+Joulescope::get_voltage(void)
+{
+	vector<UCHAR> ctr;
+	cout << "Getting voltage\n";
+	ctr = m_device.control_transfer_in_sync(
+		BMREQUEST_TO_DEVICE,
+		BMREQUEST_VENDOR,
+		(UCHAR)JoulescopeRequest::STATUS,
+		0,
+		0,
+		104
+	);
+	if (ctr.size() != 104) {
+		throw runtime_error("Queried status wasn't 104 bytes.");
+	}
+	uint32_t mv = ctr[83];
+	mv <<= 8;
+	mv |= ctr[82];
+	mv <<= 8;
+	mv |= ctr[81];
+	mv <<= 8;
+	mv |= ctr[80];
+	mv /= (1ul << 17);
+	mv *= 1000;
+	return (unsigned int)mv;
+}
+
+
 void
 Joulescope::streaming_on(bool on, EndpointIn_data_fn_t data_fn, EndpointIn_process_fn_t process_fn, EndpointIn_stop_fn_t stop_fn)
 {

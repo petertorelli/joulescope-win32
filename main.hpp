@@ -95,3 +95,4 @@ void cmd_timestamps(std::vector<std::string>);
 void cmd_trace_start(std::vector<std::string>);
 void cmd_trace_stop(std::vector<std::string>);
 void cmd_updates(std::vector<std::string>);
+void cmd_voltage(std::vector<std::string>);
