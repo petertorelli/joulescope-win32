@@ -117,7 +117,6 @@ Joulescope::get_voltage(void)
 	return (unsigned int)mv;
 }
 
-
 void
 Joulescope::streaming_on(bool on, EndpointIn_data_fn_t data_fn, EndpointIn_process_fn_t process_fn, EndpointIn_stop_fn_t stop_fn)
 {

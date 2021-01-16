@@ -399,7 +399,8 @@ cmd_power(vector<string> tokens)
 		{
 			if (g_spinning)
 			{
-				cmd_trace_stop(tokens); // note: tokens are unused by cmd_trace_stop
+				cout << "e-[Cannot talk to Joulescope while tracing]" << endl;
+				return;
 			}
 			g_joulescope.power_on(false);
 		}
@@ -552,9 +553,14 @@ cmd_samplerate(vector<string> tokens)
 void
 cmd_voltage(vector<string> tokens)
 {
+	if (g_spinning)
+	{
+		cout << "e-[Cannot talk to Joulescope while tracing]" << endl;
+		return;
+	}
 	unsigned int mv = g_joulescope.get_voltage();
 	cout << "The JS110 voltage is updated every 2 s when powered" << endl;
-	cout << "m-voltage[" << mv << "]" << endl;
+	cout << "m-voltage-mv[" << mv << "]" << endl;
 }
 
 void
