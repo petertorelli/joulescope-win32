@@ -61,7 +61,7 @@ Joulescope::is_open(void)
 bool
 Joulescope::is_powered(void)
 {
-	return (m_state.settings.sensor_power == JoulescopeState::SensorPower::ON);
+	return (m_state.settings.i_range == JoulescopeState::IRange::AUTO);
 }
 
 bool
@@ -77,13 +77,11 @@ Joulescope::power_on(bool on)
 	{
 		m_state.extio.current_lsb = JoulescopeState::CurrentLsb::GPI0;
 		m_state.settings.i_range = JoulescopeState::IRange::AUTO;
-		m_state.settings.sensor_power = JoulescopeState::SensorPower::ON;
 	}
 	else
 	{
 		m_state.extio.current_lsb = JoulescopeState::CurrentLsb::NORMAL;
 		m_state.settings.i_range = JoulescopeState::IRange::OFF;
-		m_state.settings.sensor_power = JoulescopeState::SensorPower::OFF;
 	}
 	update_extio();
 	update_settings();

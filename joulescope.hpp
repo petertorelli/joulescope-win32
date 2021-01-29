@@ -82,7 +82,9 @@ struct JoulescopeState
 	enum class TriggerSource { AUTO = 0, GPI0 = 2, GPI1 = 3 };
 	enum class CurrentLsb { NORMAL = 0, GPI0 = 2, GPI1 = 3 };
 	enum class VoltageLsb { NORMAL = 0, GPI0 = 2, GPI1 = 3 };
+	// IRange controls the MOSFET that connects +IN to +OUT
 	enum class IRange { AUTO = 0x80, OFF = 0 };
+	// SensorPower controls the internal sensor-side power
 	enum class SensorPower { OFF = 0, ON = 1 };
 	enum class Streaming { NORMAL = 3, OFF = 0 };
 	enum class Options { DEFAULT = 0};
@@ -95,7 +97,7 @@ struct JoulescopeState
 		extio.gpi0 = 0;
 		extio.gpi1 = 0;
 		settings.i_range = IRange::OFF;
-		settings.sensor_power = SensorPower::OFF;
+		settings.sensor_power = SensorPower::ON;
 		settings.streaming = Streaming::OFF;
 		settings.options = Options::DEFAULT;
 		settings.source = Source::RAW;
