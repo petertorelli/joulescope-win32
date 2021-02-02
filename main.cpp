@@ -18,7 +18,7 @@
 #include "main.hpp"
 // Note: Only the device and raw_processor are critical.
 #define PYJOULESCOPE_GITHUB_HEAD "6b92e38"
-#define VERSION "1.1.1"
+#define VERSION "1.1.2"
 
 /**
  * TODO

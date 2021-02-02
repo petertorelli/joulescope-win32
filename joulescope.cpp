@@ -103,16 +103,16 @@ Joulescope::get_voltage(void)
 	if (ctr.size() != 104) {
 		throw runtime_error("Queried status wasn't 104 bytes.");
 	}
-	uint32_t mv = ctr[83];
+	uint32_t mv = (unsigned)ctr[83];
 	mv <<= 8;
-	mv |= ctr[82];
+	mv |= (unsigned)ctr[82];
 	mv <<= 8;
-	mv |= ctr[81];
+	mv |= (unsigned)ctr[81];
 	mv <<= 8;
-	mv |= ctr[80];
-	mv /= (1ul << 17);
-	mv *= 1000;
-	return (unsigned int)mv;
+	mv |= (unsigned)ctr[80];
+	float v = (float)mv / (float)(1ul << 17);
+	v *= 1000;
+	return (unsigned int)v;
 }
 
 void
