@@ -18,7 +18,7 @@
 #include "main.hpp"
 // Note: Only the device and raw_processor are critical.
 #define PYJOULESCOPE_GITHUB_HEAD "6b92e38"
-#define VERSION "1.1.2"
+#define VERSION "1.2.0"
 
 /**
  * TODO
@@ -44,19 +44,16 @@ RawProcessor  g_raw_processor;
 Joulescope    g_joulescope;
 TraceStats    g_stats;
 CommandTable  g_commands = {
-	std::make_pair("config",      Command{ cmd_config,      "Report each configuration option." }),
-	//	std::make_pair("debug",       Command{ cmd_debug,       "Enable debug messages, if any." }),
-	std::make_pair("deinit",      Command{ cmd_deinit,      "De-initialize the current JS110." }),
-	std::make_pair("exit",        Command{ cmd_exit,        "De-initialize (if necessary) and exit." }),
-	std::make_pair("help",        Command{ cmd_help,        "Print this help." }),
-	std::make_pair("init",        Command{ cmd_init,        "[serial] Find the first JS110 (or by serial #) and initialize it." }),
-	std::make_pair("power",       Command{ cmd_power,       "[on|off] Get/set output power state." }),
-	std::make_pair("samplerate",  Command{ cmd_samplerate,  "Set the sample rate to an integer multiple of 1e6." }),
-	std::make_pair("timestamps",  Command{ cmd_timestamps,  "[on|off] Get/set timestamping state." }),
-	std::make_pair("trace-start", Command{ cmd_trace_start, "(path) (prefix) Start tracing and save files in 'path' (quote if 'path' uses spaces)." }),
-	std::make_pair("trace-stop",  Command{ cmd_trace_stop,  "Stop tracing and close file." }),
-	std::make_pair("updates",     Command{ cmd_updates,     "[on|off] Get/set one-second update state." }),
-	std::make_pair("voltage",     Command{ cmd_voltage,     "Report the internal 2s voltage mean in mv." }),
+	std::make_pair("init",    Command{ cmd_init,    "[serial] Find the first JS110 (or by serial #) and initialize it." }),
+	std::make_pair("deinit",  Command{ cmd_deinit,  "De-initialize the current JS110." }),
+	std::make_pair("power",   Command{ cmd_power,   "[on|off] Get/set output power state." }),
+	std::make_pair("timer",   Command{ cmd_timer,   "[on|off] Get/set timestamping state." }),
+	std::make_pair("trace",   Command{ cmd_trace,   "[on path prefix|off] Get/set tracing and save files in 'path/prefix' (quote if 'path' uses spaces)." }),
+	std::make_pair("rate",    Command{ cmd_rate,    "Set the sample rate to an integer multiple of 1e6." }),
+	std::make_pair("voltage", Command{ cmd_voltage, "Report the internal 2s voltage mean in mv." }),
+	std::make_pair("updates", Command{ cmd_updates, "[on|off] Get/set one-second update state." }),
+	std::make_pair("exit",    Command{ cmd_exit,    "De-initialize (if necessary) and exit." }),
+	std::make_pair("help",    Command{ cmd_help,    "Print this help." }),
 };
 
 /*
@@ -124,7 +121,6 @@ flush_processed_samples_to_disk(void)
 	//cout << "Wrote " << g_num_buffered_cal << " processed samples to disk." << endl;
 	g_num_buffered_cal = 0;
 }
-
 
 inline void
 gpi0_check(bool& last, bool current)
@@ -264,7 +260,6 @@ spin(void)
 void
 write_timestamps(void)
 {
-	// TODO: since we already use JsonCpp, why not use that?
 	// Always write this file, even if no timestamps
 	path fn = g_pfx;
 	fn += g_sfx_timestamps;
@@ -286,7 +281,12 @@ write_timestamps(void)
 	file << "]" << endl;
 	file.close();
 	// Required by the framework
-	wcout << "FileRegister:name(" << wstring(fn.c_str()) << "), class(etime), type(js110)" << endl;
+	cout
+		<< "m-regfile-fn["
+		<< g_pfx.string()
+		<< g_sfx_timestamps.string()
+		<< "]-type[etime]-name[js110]"
+		<< endl;
 }
 
 void
@@ -295,25 +295,6 @@ cmd_help(vector<string> tokens)
 	for (CommandTable::iterator itr = g_commands.begin(); itr != g_commands.end(); ++itr)
 	{
 		cout << itr->first << " - " << itr->second.desc << endl;
-	}
-}
-
-void
-cmd_config(vector<string> tokens)
-{
-	cout << "m-updates[" << (g_updates ? "on" : "off") << "]" << endl;
-	cout << "m-samplerate[" << g_stats.m_sample_rate << "]" << endl;
-	cout << "m-timestamps[" << (g_observe_timestamps ? "on" : "off") << "]" << endl;
-	if (g_joulescope.is_open())
-	{
-		cout << "m-power[" << (g_joulescope.is_powered() ? "on" : "off") << "]" << endl;
-		cout << "m-tracing[" << (g_joulescope.is_tracing() ? "on" : "off") << "]" << endl;
-	}
-	else
-	{
-		// TODO: This isn't entirely true: the device may have been left in an indeterminate state.
-		cout << "m-power[off]" << endl;
-		cout << "m-tracing[off]" << endl;
 	}
 }
 
@@ -360,23 +341,6 @@ cmd_init(vector<string> tokens)
 }
 
 void
-cmd_deinit(vector<string> tokens)
-{
-	if (g_spinning)
-	{
-		cmd_trace_stop(tokens);
-	}
-	if (g_joulescope.is_open())
-	{
-		g_joulescope.close();
-	}
-	if (g_trace_file.is_open())
-	{
-		g_trace_file.close();
-	}
-}
-
-void
 cmd_power(vector<string> tokens)
 {
 	if (tokens.size() > 1)
@@ -406,7 +370,7 @@ cmd_power(vector<string> tokens)
 		}
 		else
 		{
-			cout << "e-[Valid options for 'power' are 'on' or 'off']" << endl;
+			cout << "e-['power' options are 'on' or 'off']" << endl;
 			return;
 		}
 	}
@@ -414,7 +378,7 @@ cmd_power(vector<string> tokens)
 }
 
 void
-cmd_trace_start(vector<string> tokens)
+trace_start()
 {
 	if (g_spinning)
 	{
@@ -429,15 +393,10 @@ cmd_trace_start(vector<string> tokens)
 	g_raw_processor.callback_set(raw_processor_callback, nullptr);
 	// Seems awkward to do this here.
 	g_raw_processor.calibration_set(g_joulescope.m_calibration);
-	g_tmpdir = tokens.size() < 2 ? "." : tokens[1];
-	g_pfx = tokens.size() < 3 ? "js110" : tokens[2];
 	path fn = g_pfx;
 	fn += g_sfx_energy;
 	path fp = g_tmpdir / fn;
-	cout << "Filename " << fp << endl;
 	g_trace_file.open(fp, ios::binary | ios::out);
-	// Required by the framework
-	wcout << "FileRegister:name(" << wstring(fn.c_str()) << "), class(emon), type(js110)" << endl;
 	union {
 		float f;
 		uint8_t b[4];
@@ -461,11 +420,10 @@ cmd_trace_start(vector<string> tokens)
 	{
 		throw runtime_error("main::cmd_trace_start() ... Failed to CreateThread");
 	}
-	cout << "m-[Trace started]" << endl;
 }
 
 void
-cmd_trace_stop(vector<string> tokens)
+trace_stop()
 {
 	if (g_spinning == false)
 	{
@@ -481,17 +439,69 @@ cmd_trace_stop(vector<string> tokens)
 	DWORD rv = WaitForSingleObject(g_hspin, 10000);
 	if (rv != WAIT_OBJECT_0)
 	{
-		throw runtime_error("main::cmd_trace_stop() ... Trace thread failed to exit");
+		throw runtime_error("main::cmd_trace_stop(): Trace thread failed to exit");
 	}
 	g_joulescope.streaming_on(false);
 	flush_processed_samples_to_disk();
 	g_trace_file.close();
+	// Required by the framework
+	cout
+		<< "m-regfile-fn["
+		<< g_pfx.string()
+		<< g_sfx_energy.string()
+		<< "]-type[emon]-name[js110]"
+		<< endl;
 	write_timestamps();
-	cout << "m-[Trace stopped]" << endl;
+	double pct = (double)g_stats.m_total_dropped_pkts
+		/ (double)g_stats.m_last_pkt_index * 100;
+	cout
+		<< "Dropped "
+		<< g_stats.m_total_dropped_pkts
+		<< " packets out of "
+		<< g_stats.m_last_pkt_index
+		<< ", "
+		<< std::setprecision(3) << pct
+		<< "%"
+		<< endl;
+	if (pct > MAX_DROPPED_PACKETS_PCT)
+	{
+		cout
+			<< "e-[Dropped more than "
+			<< MAX_DROPPED_PACKETS_PCT
+			<< "% of packets]"
+			<< endl;
+	}
 }
 
 void
-cmd_timestamps(vector<string> tokens)
+cmd_trace(vector<string> tokens) {
+	if (tokens.size() > 1)
+	{
+		if (tokens[1] == "on")
+		{
+			if (tokens.size() != 4)
+			{
+				cout << "e-['trace on' requires TMPDIR and PFX']" << endl;
+				return;
+			}
+			g_tmpdir = tokens[2];
+			g_pfx = tokens[3];
+			trace_start();
+		}
+		else if (tokens[1] == "off")
+		{
+			trace_stop();
+		}
+		else
+		{
+			cout << "e-['trace' options are 'on' or 'off']" << endl;
+		}
+	}
+	cout << "m-trace[" << (g_spinning ? "on" : "off") << "]" << endl;
+}
+
+void
+cmd_timer(vector<string> tokens)
 {
 	if (tokens.size() > 1)
 	{
@@ -505,11 +515,11 @@ cmd_timestamps(vector<string> tokens)
 		}
 		else
 		{
-			cout << "e-[Valid options for 'timestamps' are 'on' or 'off']" << endl;
+			cout << "e-['timer' options are 'on' or 'off']" << endl;
 			return;
 		}
 	}
-	cout << "m-timestamps[" << (g_observe_timestamps ? "on" : "off") << "]" << endl;
+	cout << "m-timer[" << (g_observe_timestamps ? "on" : "off") << "]" << endl;
 }
 
 void
@@ -527,7 +537,7 @@ cmd_updates(vector<string> tokens)
 		}
 		else
 		{
-			cout << "e-[Valid options for 'updates' are 'on' or 'off']" << endl;
+			cout << "e-['updates' options are 'on' or 'off']" << endl;
 			return;
 		}
 	}
@@ -535,7 +545,7 @@ cmd_updates(vector<string> tokens)
 }
 
 void
-cmd_samplerate(vector<string> tokens)
+cmd_rate(vector<string> tokens)
 {
 	if (g_spinning)
 	{
@@ -545,9 +555,18 @@ cmd_samplerate(vector<string> tokens)
 	if (tokens.size() > 1)
 	{
 		g_stats.reset();
-		g_stats.set_samplerate(stoi(tokens[1]));
+		int rate = stoi(tokens[1]);
+
+		if ((rate < 1) || (MAX_SAMPLE_RATE % rate) != 0)
+		{
+			cout << "e-[Sample rate must be a factor of 1'000'000]" << endl;
+		}
+		else
+		{
+			g_stats.set_samplerate(stoi(tokens[1]));
+		}
 	}
-	cout << "m-samplerate[" << g_stats.m_sample_rate << "]" << endl;
+	cout << "m-rate-hz[" << g_stats.m_sample_rate << "]" << endl;
 }
 
 void
@@ -559,8 +578,24 @@ cmd_voltage(vector<string> tokens)
 		return;
 	}
 	unsigned int mv = g_joulescope.get_voltage();
-	cout << "The JS110 voltage is updated every 2 s when powered" << endl;
 	cout << "m-voltage-mv[" << mv << "]" << endl;
+}
+
+void
+cmd_deinit(vector<string> tokens)
+{
+	if (g_spinning)
+	{
+		trace_stop();
+	}
+	if (g_joulescope.is_open())
+	{
+		g_joulescope.close();
+	}
+	if (g_trace_file.is_open())
+	{
+		g_trace_file.close();
+	}
 }
 
 void
@@ -595,7 +630,6 @@ main(int argc, char* argv[])
 	cout << "Version : " << VERSION << endl;
 	cout << "Head    : " << PYJOULESCOPE_GITHUB_HEAD << endl;
 	g_waiting_on_user = true;
-	cmd_config(std::vector<string>());
 	cout << "m-ready" << endl;
 	try {
 		vector<string> tokens;

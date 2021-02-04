@@ -28,6 +28,8 @@
 #include <boost\algorithm\string\trim_all.hpp>
 #include <boost\tokenizer.hpp>
 
+#define MAX_DROPPED_PACKETS_PCT 0.1
+
 typedef boost::escaped_list_separator<char> delim_t;
 typedef boost::tokenizer<delim_t> tokenizer_t;
 
@@ -55,10 +57,6 @@ struct TraceStats
 	void set_samplerate(uint32_t sample_rate)
 	{
 		m_sample_rate = sample_rate;
-		if ((sample_rate < 1) || (MAX_SAMPLE_RATE % sample_rate) != 0)
-		{
-			throw std::runtime_error("Sample rate must be a factor of 1'000'000");
-		}
 		m_total_downsamples = MAX_SAMPLE_RATE / m_sample_rate;
 	}
 	uint32_t      m_sample_rate;
@@ -83,16 +81,14 @@ struct Command
 
 typedef std::map<std::string, Command> CommandTable;
 
-void cmd_config(std::vector<std::string>);
 void cmd_debug(std::vector<std::string>);
 void cmd_deinit(std::vector<std::string>);
 void cmd_exit(std::vector<std::string>);
 void cmd_help(std::vector<std::string>);
 void cmd_init(std::vector<std::string>);
 void cmd_power(std::vector<std::string>);
-void cmd_samplerate(std::vector<std::string>);
-void cmd_timestamps(std::vector<std::string>);
-void cmd_trace_start(std::vector<std::string>);
-void cmd_trace_stop(std::vector<std::string>);
-void cmd_updates(std::vector<std::string>);
+void cmd_timer(std::vector<std::string>);
+void cmd_trace(std::vector<std::string>);
+void cmd_rate(std::vector<std::string>);
 void cmd_voltage(std::vector<std::string>);
+void cmd_updates(std::vector<std::string>);
