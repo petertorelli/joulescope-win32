@@ -267,7 +267,6 @@ write_timestamps(void)
 	fstream file;
 	file.exceptions(std::ifstream::failbit | std::ifstream::badbit);
 	file.open(fp, ios::out);
-	cout << "# timestamps " << g_stats.m_timestamps.size() << endl;
 	file << "[" << endl;
 	for (size_t i(0); i < g_stats.m_timestamps.size(); ++i)
 	{
@@ -630,7 +629,6 @@ main(int argc, char* argv[])
 	cout << "Version : " << VERSION << endl;
 	cout << "Head    : " << PYJOULESCOPE_GITHUB_HEAD << endl;
 	g_waiting_on_user = true;
-	cout << "m-ready" << endl;
 	try {
 		vector<string> tokens;
 		while (g_waiting_on_user)
