@@ -18,7 +18,7 @@
 #include "main.hpp"
 // Note: Only the device and raw_processor are critical.
 #define PYJOULESCOPE_GITHUB_HEAD "6b92e38"
-#define VERSION "1.2.0"
+#define VERSION "1.3.0"
 
 /**
  * TODO
@@ -337,6 +337,10 @@ cmd_init(vector<string> tokens)
 		g_joulescope.open(path.c_str());
 		wcout << "m-[Opened Joulescope at path " << path << "]" << endl;
 	}
+	// A bit of a hack b/c JS110 LibUSB/WinUSB can be erratic.
+	if (tokens.size() == 3) {
+		g_stats.m_drop_thresh = stof(tokens[2]);
+	}
 }
 
 void
@@ -462,11 +466,11 @@ trace_stop()
 		<< std::setprecision(3) << pct
 		<< "%"
 		<< endl;
-	if (pct > MAX_DROPPED_PACKETS_PCT)
+	if (pct > g_stats.m_drop_thresh)
 	{
 		cout
 			<< "e-[Dropped more than "
-			<< MAX_DROPPED_PACKETS_PCT
+			<< g_stats.m_drop_thresh
 			<< "% of packets]"
 			<< endl;
 	}
@@ -485,6 +489,8 @@ cmd_trace(vector<string> tokens) {
 			}
 			g_tmpdir = tokens[2];
 			g_pfx = tokens[3];
+			// Always print this on trace start so we detect any cheating.
+			cout << "m-dropthresh[" << std::setprecision(3) << g_stats.m_drop_thresh << "]" << endl;
 			trace_start();
 		}
 		else if (tokens[1] == "off")

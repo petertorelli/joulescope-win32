@@ -28,8 +28,6 @@
 #include <boost\algorithm\string\trim_all.hpp>
 #include <boost\tokenizer.hpp>
 
-#define MAX_DROPPED_PACKETS_PCT 0.1
-
 typedef boost::escaped_list_separator<char> delim_t;
 typedef boost::tokenizer<delim_t> tokenizer_t;
 
@@ -52,6 +50,7 @@ struct TraceStats
 		m_total_dropped_pkts = 0;
 		m_total_nan = 0;
 		m_total_inf = 0;
+		m_drop_thresh = 0.1f;
 		m_timestamps.clear();
 	}
 	void set_samplerate(uint32_t sample_rate)
@@ -69,6 +68,7 @@ struct TraceStats
 	uint64_t      m_total_dropped_pkts;
 	uint64_t      m_total_nan;
 	uint64_t      m_total_inf;
+	float         m_drop_thresh;
 
 	std::vector<float> m_timestamps;
 };
