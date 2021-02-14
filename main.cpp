@@ -30,20 +30,21 @@ using namespace std;
 using namespace std::filesystem;
 using namespace boost;
 
+Joulescope    g_joulescope;
+RawProcessor  g_raw_processor;
+FileWriter    g_file_writer;
+RawBuffer     g_raw_buffer;
+
 path          g_tmpdir(".");
 path          g_pfx("js110");
 const path    g_sfx_energy("-energy.bin");
 const path    g_sfx_timestamps("-timestamps.json");
-fstream       g_trace_file;
 bool          g_spinning(false);
 bool          g_waiting_on_user(false);
 bool          g_observe_timestamps(false);
 bool          g_updates(false);
 HANDLE        g_hspin(NULL);
-RawProcessor  g_raw_processor;
-Joulescope    g_joulescope;
-TraceStats    g_stats;
-float		  g_drop_thresh(0.1);
+float		  g_drop_thresh(0.1f);
 CommandTable  g_commands = {
 	std::make_pair("init",    Command{ cmd_init,    "[serial] Find the first JS110 (or by serial #) and initialize it." }),
 	std::make_pair("deinit",  Command{ cmd_deinit,  "De-initialize the current JS110." }),
@@ -89,154 +90,20 @@ size_t   g_num_buffered_raw(0);
 float    g_cal_e[CAL_BUFFER_SIZE];
 size_t   g_num_buffered_cal(0);
 
-void
-queue_raw_sample(uint16_t _i, uint16_t _v)
-{
-	g_raw_i[g_num_buffered_raw] = _i;
-	g_raw_v[g_num_buffered_raw] = _v;
-	++g_num_buffered_raw;
-	if (g_num_buffered_raw >= RAW_BUFFER_SIZE)
-	{
-		cout << "Buffer overflow" << endl;
-		g_num_buffered_raw = 0;
-	}
-}
+#define NUM_FILE_BUFS 8
+#define NUM_E_SAMPLES (1024u * 1024u)
 
-bool
-endpoint_process_fn_callback(void)
-{
-	for (size_t j(0); j < g_num_buffered_raw; ++j)
-	{
-		g_raw_processor.process(g_raw_i[j], g_raw_v[j]);
-	}
-	//cout << "Processed " << g_num_buffered_raw << " samples." << endl;
-	g_num_buffered_raw = 0;
-	return false;
-}
+float g_file_queue[NUM_FILE_BUFS][NUM_E_SAMPLES];
+size_t g_head_file_buf = 0;
+size_t g_tail_file_buf = 0;
+size_t g_cur_e_pos = 0;
+HANDLE h_file_mutex(NULL);
 
-void
-flush_processed_samples_to_disk(void)
-{
-	// sizeof_t(float) had better be 4!
-	g_trace_file.write(reinterpret_cast<const char*>(g_cal_e), g_num_buffered_cal * 4);
-	//cout << "Wrote " << g_num_buffered_cal << " processed samples to disk." << endl;
-	g_num_buffered_cal = 0;
-}
-
-inline void
-gpi0_check(bool& last, bool current)
-{
-	float timestamp;
-	// packed bits : 7 : 6 = 0, 5 = voltage_lsb, 4 = current_lsb, 3 : 0 = i_range
-	if (last && !current)
-	{
-		if (g_observe_timestamps == true) {
-			timestamp = (float)g_stats.m_total_samples / (float)g_stats.m_sample_rate;
-			g_stats.m_timestamps.push_back(timestamp);
-			cout << "m-lap-us-" << (unsigned int)(timestamp * 1e6) << endl;
-		}
-	}
-	last = current;
-}
-
-inline void
-heartbeat(void)
-{
-	static uint64_t prev_dropped = 0;
-
-	// Has one second elapsed?
-	if ((g_stats.m_total_samples % g_stats.m_sample_rate) == 0)
-	{
-		if (g_updates || (g_stats.m_total_dropped_pkts > prev_dropped))
-		{
-			cout << "Total samples " << g_stats.m_total_samples;
-			cout << " # dropped packets " << g_stats.m_total_dropped_pkts;
-			cout << " [ # NaN=" << g_stats.m_total_nan;
-			cout << ", # inf=" << g_stats.m_total_inf;
-			cout << " ]";
-			cout << endl;
-		}
-		prev_dropped = g_stats.m_total_dropped_pkts;
-	}
-}
-
-inline void
-transcendental_check(float f)
-{
-	if (isnan(f))
-	{
-		++g_stats.m_total_nan;
-	}
-	if (isinf(f))
-	{
-		++g_stats.m_total_inf;
-	}
-}
-
-void
-raw_processor_callback(void *puser, float I, float V, uint8_t bits)
-{
-	double E = ((double)I * (double)V) / 2.0;
-	float Ef = (float)E;
-	transcendental_check(Ef);
-	g_stats.m_accumulator += E;
-	++g_stats.m_total_accumulated;
-	if (g_stats.m_total_accumulated == g_stats.m_total_downsamples)
-	{
-		++g_stats.m_total_samples;
-		g_cal_e[g_num_buffered_cal] = (float)g_stats.m_accumulator;
-		++g_num_buffered_cal;
-		if (g_num_buffered_cal == CAL_BUFFER_SIZE)
-		{
-			flush_processed_samples_to_disk(); // resets counter/index
-		}
-		g_stats.m_total_accumulated = 0;
-		g_stats.m_accumulator = 0;
-		heartbeat();
-	}
-	gpi0_check(g_stats.m_last_gpi0, ((bits >> 4) & 1) == 1);
-}
-
-void
-process_packet(JoulescopePacket* pkt)
-{
-	/*
-	cout << "Joulescope Packet" << endl;
-	cout << "  buffer_type = " << (int)pkt->buffer_type << endl;
-	cout << "  status = " << (int)pkt->status << endl;
-	cout << "  length = " << pkt->length << endl;
-	cout << "  pkt_index = " << pkt->pkt_index << endl;
-	cout << "  usb_frame_index = " << pkt->usb_frame_index << endl;
-	*/
-	uint16_t delta = pkt->pkt_index - g_stats.m_last_pkt_index;
-	if (delta > 1)
-	{
-		// Packet loss due to USB processing latency
-		g_stats.m_total_dropped_pkts += delta;
-	}
-	g_stats.m_last_pkt_index = pkt->pkt_index;
-	for (size_t i(0); i < 126; ++i) // TODO Magic #
-	{
-		queue_raw_sample(pkt->samples[i].current, pkt->samples[i].voltage);
-	}
-}
-
-// TODO this should be a reference otherwise we're copying lots of bytes
-bool
-endpoint_data_fn_callback(vector<UCHAR> data)
-{
-	JoulescopePacket* pkts = (JoulescopePacket*)data.data();
-	size_t num_pkts = data.size() / 512;
-	while (num_pkts--)
-	{
-		process_packet(pkts++);
-	}
-	return false;
-}
 
 void
 spin(void)
 {
+	cout << "ENTERING SPIN\n";
 	try
 	{
 		while (g_spinning == true)
@@ -256,37 +123,6 @@ spin(void)
 	{
 		cout << "e-[Unknown exception in thread]" << endl;
 	}
-}
-
-void
-write_timestamps(void)
-{
-	// Always write this file, even if no timestamps
-	path fn = g_pfx;
-	fn += g_sfx_timestamps;
-	path fp = g_tmpdir / fn;
-	fstream file;
-	file.exceptions(std::ifstream::failbit | std::ifstream::badbit);
-	file.open(fp, ios::out);
-	file << "[" << endl;
-	for (size_t i(0); i < g_stats.m_timestamps.size(); ++i)
-	{
-		file << "\t" << g_stats.m_timestamps[i];
-		if (i < (g_stats.m_timestamps.size() - 1))
-		{
-			file << ",";
-		}
-		file << endl;
-	}
-	file << "]" << endl;
-	file.close();
-	// Required by the framework
-	cout
-		<< "m-regfile-fn["
-		<< g_pfx.string()
-		<< g_sfx_timestamps.string()
-		<< "]-type[etime]-name[js110]"
-		<< endl;
 }
 
 void
@@ -335,7 +171,13 @@ cmd_init(vector<string> tokens)
 	}
 	else
 	{
+		// Connect up all our pieces!
+		// The RawBuffer is connected to the Joulescope with Joulescope::trace_on();
 		g_joulescope.open(path.c_str());
+		g_raw_buffer.set_raw_processor(&g_raw_processor);
+		g_raw_processor.calibration_set(g_joulescope.m_calibration);
+		g_raw_processor.set_writer(&g_file_writer);
+
 		wcout << "m-[Opened Joulescope at path " << path << "]" << endl;
 	}
 	// A bit of a hack b/c JS110 LibUSB/WinUSB can be erratic.
@@ -394,24 +236,12 @@ trace_start()
 		cout << "e-[No Joulescopes are open]" << endl;
 		return;
 	}
-	g_raw_processor.callback_set(raw_processor_callback, nullptr);
 	// Seems awkward to do this here.
-	g_raw_processor.calibration_set(g_joulescope.m_calibration);
 	path fn = g_pfx;
 	fn += g_sfx_energy;
 	path fp = g_tmpdir / fn;
-	g_trace_file.open(fp, ios::binary | ios::out);
-	union {
-		float f;
-		uint8_t b[4];
-	} x;
-	x.f = (float)g_stats.m_sample_rate;
-	uint8_t version = 0xf1;
-	g_trace_file.write((char*)&version, 1);
-	g_trace_file.write((char*)x.b, 4);
-	g_stats.reset();
 	g_joulescope.power_on(true);
-	g_joulescope.streaming_on(true, endpoint_data_fn_callback, endpoint_process_fn_callback);
+	g_joulescope.streaming_on(true, &g_raw_buffer);
 	g_spinning = true;
 	g_hspin = CreateThread(
 		NULL,
@@ -446,8 +276,6 @@ trace_stop()
 		throw runtime_error("main::cmd_trace_stop(): Trace thread failed to exit");
 	}
 	g_joulescope.streaming_on(false);
-	flush_processed_samples_to_disk();
-	g_trace_file.close();
 	// Required by the framework
 	cout
 		<< "m-regfile-fn["
@@ -455,26 +283,6 @@ trace_stop()
 		<< g_sfx_energy.string()
 		<< "]-type[emon]-name[js110]"
 		<< endl;
-	write_timestamps();
-	double pct = (double)g_stats.m_total_dropped_pkts
-		/ (double)g_stats.m_last_pkt_index * 100;
-	cout
-		<< "Dropped "
-		<< g_stats.m_total_dropped_pkts
-		<< " packets out of "
-		<< g_stats.m_last_pkt_index
-		<< ", "
-		<< std::setprecision(3) << pct
-		<< "%"
-		<< endl;
-	if (pct > g_drop_thresh)
-	{
-		cout
-			<< "e-[Dropped more than "
-			<< g_drop_thresh
-			<< "% of packets]"
-			<< endl;
-	}
 }
 
 void
@@ -560,7 +368,6 @@ cmd_rate(vector<string> tokens)
 	}
 	if (tokens.size() > 1)
 	{
-		g_stats.reset();
 		int rate = stoi(tokens[1]);
 
 		if ((rate < 1) || (MAX_SAMPLE_RATE % rate) != 0)
@@ -569,10 +376,10 @@ cmd_rate(vector<string> tokens)
 		}
 		else
 		{
-			g_stats.set_samplerate(stoi(tokens[1]));
+			//g_stats.set_samplerate(stoi(tokens[1]));
 		}
 	}
-	cout << "m-rate-hz[" << g_stats.m_sample_rate << "]" << endl;
+//	cout << "m-rate-hz[" << g_stats.m_sample_rate << "]" << endl;
 }
 
 void
@@ -597,10 +404,6 @@ cmd_deinit(vector<string> tokens)
 	if (g_joulescope.is_open())
 	{
 		g_joulescope.close();
-	}
-	if (g_trace_file.is_open())
-	{
-		g_trace_file.close();
 	}
 }
 
@@ -629,8 +432,6 @@ main(int argc, char* argv[])
 	signal(SIGINT, sigint_handler);
 	signal(SIGTERM, sigint_handler);
 	signal(SIGBREAK, sigint_handler);
-
-	g_trace_file.exceptions(std::ifstream::failbit | std::ifstream::badbit);
 
 	cout << "Joulescope(R) JS110 Win32 Driver" << endl;
 	cout << "Version : " << VERSION << endl;

@@ -148,14 +148,19 @@
   <ItemGroup>
     <ClCompile Include="dist\jsoncpp.cpp" />
     <ClCompile Include="device.cpp" />
+    <ClCompile Include="file_writer.cpp" />
     <ClCompile Include="joulescope.cpp" />
     <ClCompile Include="main.cpp" />
+    <ClCompile Include="raw_buffer.cpp" />
     <ClCompile Include="raw_processor.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="device.hpp" />
+    <ClInclude Include="file_writer.hpp" />
     <ClInclude Include="joulescope.hpp" />
+    <ClInclude Include="joulescope_packet.hpp" />
     <ClInclude Include="main.hpp" />
+    <ClInclude Include="raw_buffer.hpp" />
     <ClInclude Include="raw_processor.hpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

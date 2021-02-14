@@ -19,6 +19,8 @@
 
 #include "joulescope.hpp"
 #include "raw_processor.hpp"
+#include "raw_buffer.hpp"
+#include "file_writer.hpp"
 #include <fstream>
 #include <filesystem>
 #include <iomanip>

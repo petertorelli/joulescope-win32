@@ -116,7 +116,7 @@ Joulescope::get_voltage(void)
 }
 
 void
-Joulescope::streaming_on(bool on, EndpointIn_data_fn_t data_fn, EndpointIn_process_fn_t process_fn, EndpointIn_stop_fn_t stop_fn)
+Joulescope::streaming_on(bool on, RawBuffer *raw_buffer) //EndpointIn_data_fn_t data_fn, EndpointIn_process_fn_t process_fn, EndpointIn_stop_fn_t stop_fn)
 {
 	if (on)
 	{
@@ -128,9 +128,12 @@ Joulescope::streaming_on(bool on, EndpointIn_data_fn_t data_fn, EndpointIn_proce
 			STREAMING_ENDPOINT_ID,
 			transfers_outstanding,
 			transfer_length * BULK_IN_LENGTH,
+			raw_buffer
+			/*
 			data_fn,
 			process_fn,
 			stop_fn
+			*/
 		);
 	}
 	else

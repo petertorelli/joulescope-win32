@@ -56,9 +56,12 @@ EndpointIn::EndpointIn(
 	UCHAR _pipe_id,
 	UINT _transfers,
 	UINT _block_size,
+	RawBuffer *raw_buffer
+	/*
 	EndpointIn_data_fn_t data_fn,
 	EndpointIn_process_fn_t process_fn,
 	EndpointIn_stop_fn_t stop_fn
+	*/
 )
 {
 	m_winusb = _winusb;
@@ -67,9 +70,12 @@ EndpointIn::EndpointIn(
 	m_overlapped_pending.clear();
 	m_transfers = _transfers;
 	m_transfer_size = (UINT)floor(((double)((size_t)_block_size + BULK_IN_LENGTH - 1) / (double)BULK_IN_LENGTH)) * BULK_IN_LENGTH;
+	/*
 	m_data_fn = data_fn;
 	m_process_fn = process_fn;
 	m_stop_fn = stop_fn;
+	*/
+	m_raw_buffer = raw_buffer;
 	m_process_transfers = 0;
 	m_state = state_e::ST_IDLE;
 	m_stop_code = DeviceEvent::NONE; // python uses None and enum & getlasterror!
@@ -186,15 +192,15 @@ EndpointIn::_expire(void)
 			ULONG length = length_transferred; // seems a little redundant
 			m_byte_count_this += length;
 			++count;
-			if (m_data_fn != nullptr)
+			if (m_raw_buffer != nullptr)
 			{
 				if (length > ov->m_buffer.size())
 				{
 					throw runtime_error("EndpointIn::_expire() ... transferred bytes exceed storage buffer size");
 				}
 				vector<UCHAR> slice(ov->m_buffer.begin(), ov->m_buffer.begin() + length);
-				try
-				{
+				//try
+				//{
 #ifdef ENDPOINT_PERFSTATS
 					std::chrono::high_resolution_clock::time_point a = std::chrono::high_resolution_clock::now();
 					rv = m_data_fn(slice);
@@ -203,14 +209,18 @@ EndpointIn::_expire(void)
 					float nsec = std::chrono::duration_cast<std::chrono::nanoseconds>(delta).count() / 1e9;
 					m_perf_stats.data_fn_time.push_back(nsec);
 #else
-					rv = m_data_fn(slice);
+					//rv = m_data_fn(slice);
+					rv = m_raw_buffer->add_data(slice);
 #endif
-				}
+				//}
+				/*
 				catch (...)
 				{
-					throw runtime_error("EndpointIn::_expire() ... exception in data function");
+//					throw runtime_error("EndpointIn::_expire() ... exception in data function");
 					rv = true;
+					// TODO the above never executes!
 				}
+				*/
 			}
 			if (rv)
 			{
@@ -328,7 +338,7 @@ EndpointIn::process_signal(void)
 		m_process_transfers = 0;
 		try
 		{
-			if (m_process_fn != nullptr)
+			if (m_raw_buffer != nullptr)
 			{
 #ifdef ENDPOINT_PERFSTATS
 				std::chrono::high_resolution_clock::time_point a = std::chrono::high_resolution_clock::now();
@@ -339,7 +349,7 @@ EndpointIn::process_signal(void)
 				m_perf_stats.process_fn_time.push_back(nsec);
 				return rv;
 #else
-				return m_process_fn();
+				return m_raw_buffer->process_data();
 #endif
 			}
 		}
@@ -384,17 +394,19 @@ EndpointIn::stop(void)
 			process_signal();
 		}
 		_close();
+		/*
 		try
 		{
-			if (m_stop_fn != nullptr)
+			if (m_raw_buffer != nullptr)
 			{
-				m_stop_fn((int)m_stop_code, m_stop_message);
+				m_raw_buffer.endpoint_stop_fn((int)m_stop_code, m_stop_message);
 			}
 		}
 		catch (...)
 		{
 			LOG("_stop_fn exception");
 		}
+		*/
 		m_state = state_e::ST_IDLE;
 	}
 }
@@ -953,9 +965,12 @@ WinUsbDevice::read_stream_start(
 	UCHAR endpoint_id,
 	UINT transfers,
 	UINT block_size,
+	RawBuffer *raw_buffer
+	/*
 	EndpointIn_data_fn_t data_fn,
 	EndpointIn_process_fn_t process_fn,
 	EndpointIn_stop_fn_t stop_fn
+	*/
 )
 {
 	DBG("WinUsbDevice::read_stream_start(endpoint_id=" << (int)endpoint_id << ")");
@@ -969,7 +984,7 @@ WinUsbDevice::read_stream_start(
 		m_endpoints.erase(itr);
 	}
 	DBG("WinUsbDevice::read_stream_start() ... creating & inserting endpoint");
-	EndpointIn endpoint(m_winusb, pipe_id, transfers, block_size, data_fn, process_fn, stop_fn);
+	EndpointIn endpoint(m_winusb, pipe_id, transfers, block_size, raw_buffer /*data_fn, process_fn, stop_fn*/);
 	m_endpoints.insert(make_pair(pipe_id, endpoint));
 	//BUGBUG: the pair above is a COPY!
 	//endpoint.start(); <- so we can't do this. heh.
