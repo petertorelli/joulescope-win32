@@ -1,5 +1,110 @@
 #include "file_writer.hpp"
 
+void
+FileWriter::add(float i, float v, uint8_t bits)
+{
+	float e = (double)i * (double)v / 2.0f; // wait, isn't this 1.0?
+	m_acc += e;
+	++m_total_accumulated;
+	if (m_total_accumulated == m_samples_per_downsample)
+	{
+		m_total_accumulated = 0;
+		m_acc = 0;
+		save_acc();
+	}
+	//gpi0_check(m_last_gpi0, ((bits >> 4) & 1) == 1);
+}
+
+void
+FileWriter::open(string fn)
+{
+	cout << "Opening file " << fn << endl;
+	m_file_handle = CreateFileA(
+		fn.c_str(),
+		GENERIC_WRITE,
+		0,
+		NULL,
+		CREATE_ALWAYS,
+		FILE_FLAG_OVERLAPPED,
+		NULL);
+	if (m_file_handle == INVALID_HANDLE_VALUE)
+	{
+		throw runtime_error("Unable to create FileWriter file handle");
+	}
+	for (size_t i = 0; i < MAX_OVERLAPPED_WRITES; ++i)
+	{
+		m_events[i] = CreateEvent(NULL, TRUE, FALSE, NULL);
+	}
+	m_file_offset = 0;
+}
+
+void
+FileWriter::close(void)
+{
+	// Write partial buffer and set signal to exit on completion w/timeout.
+	CloseHandle(m_file_handle);
+}
+
+void
+FileWriter::save_acc(void)
+{
+	unsigned saved_head;
+	unsigned saved_len;
+	m_pages[m_head][m_idx] = m_acc;
+	++m_idx;
+	if (m_idx == MAX_PAGE_SIZE)
+	{
+		// Using 'saved' so we can update m_head ASAP before queue_page
+		saved_head = m_head;
+		m_head = (m_head + 1) & 0x7;
+		saved_len = m_idx;
+		m_idx = 0;
+		if (m_head == m_tail)
+		{
+			throw runtime_error("Ring-buffer exhausted");
+		}
+		queue_page(saved_head, saved_len);
+	}
+}
+
+void
+FileWriter::queue_page(unsigned page, unsigned len)
+{
+	ZeroMemory(&m_ov[page], sizeof(OVERLAPPED));
+	m_ov[page].hEvent = m_events[page];
+	m_ov[page].OffsetHigh = (m_file_offset >> 32) & 0xFFFF'FFFF;
+	m_ov[page].Offset = m_file_offset & 0xFFFF'FFFF;
+	if (!WriteFile(
+		m_file_handle,
+		(LPCVOID)m_pages[page],
+		len * sizeof(float),
+		NULL,
+		(LPOVERLAPPED)&m_ov[page]))
+	{
+		DWORD err = GetLastError();
+		if (err != ERROR_IO_PENDING)
+		{
+			cout << "GetLastError() = " << err << endl;
+			throw runtime_error("Failed to write overlapped");
+		}
+	}
+	m_file_offset += len * sizeof(float);
+}
+
+void
+FileWriter::wait(DWORD msec)
+{
+	DWORD ret = WaitForMultipleObjects(MAX_OVERLAPPED_WRITES, m_events, FALSE, msec);
+	if (ret < MAXIMUM_WAIT_OBJECTS)
+	{
+		unsigned page =  ret - WAIT_OBJECT_0;
+		if (page < MAX_OVERLAPPED_WRITES) {
+			ResetEvent(m_events[page]);
+		}
+		cout << "Page write completed " << ret << " page=" << page << endl;
+		m_tail = (m_tail + 1) & 0x7;
+	}
+}
 
 /**
 * the writer loops spins on waiting for the data ready event
@@ -48,61 +153,13 @@ they should move together
 */
 #if 0
 
-	// needs to be more than this, we need the entire RawProcessor in here.
-	void add(float sample)
-	{
-		m_pages[m_head][m_ptr] = sample;
-		++m_ptr;
-		if (m_ptr > MAX_PAGE_SIZE)
-		{
-			queue_page();
-			m_ptr = 0;
-		}
-	}
+	
+	
+	*/
 
-	void queue_page(void)
-	{
-		size_t head = m_head;
-		++m_head;
-		m_head = m_head == MAX_OVERLAPPED_WRITES ? 0 : m_head;
-		if (m_head == m_tail)
-		{
-			throw runtime_error("Out of overlapped file buffers");
-		}
-		ZeroMemory(&m_ov[head], sizeof(OVERLAPPED));
-		if (!WriteFile(m_file_handle, m_pages[head], m_ptr, NULL, &m_ov[head]))
-		{
-			throw runtime_error("Failed to write overlapped");
-		}
-	}
-	
-	void spin(void)
-	{
-		while (1)
-		{
-			DWORD ret = WaitForMultipleObjects(3, m_events, 0, 1);
-			if (ret < (MAX_OVERLAPPED_WRITES))
-			{
-				++m_tail;
-				m_tail = m_tail == MAX_OVERLAPPED_WRITES ? 0 : m_tail;
-			}
-			else if (ret == (WAIT_OBJECT_0 + MAX_OVERLAPPED_WRITES + EVENT_DATA_READY))
-			{
-				// save head ptr
-				// advance head ptr
-				// queue write from saved head ptr
-			}
-			else if (ret == (WAIT_OBJECT_0 + MAX_OVERLAPPED_WRITES + EVENT_STOP_WRITING))
-			{
-				break;
-			}
-		}
-	}
-	
-	
-	
-	
-	
+
+
+		/*
 	
 	double m_acc;
 	size_t m_total_samples;
@@ -190,3 +247,4 @@ they should move together
 		m_raw_processor.callback_set(raw_processor_callback, nullptr);
 	}
 #endif
+

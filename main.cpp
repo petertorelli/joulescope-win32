@@ -39,12 +39,11 @@ path          g_tmpdir(".");
 path          g_pfx("js110");
 const path    g_sfx_energy("-energy.bin");
 const path    g_sfx_timestamps("-timestamps.json");
-bool          g_spinning(false);
+
 bool          g_waiting_on_user(false);
 bool          g_observe_timestamps(false);
-bool          g_updates(false);
-HANDLE        g_hspin(NULL);
 float		  g_drop_thresh(0.1f);
+
 CommandTable  g_commands = {
 	std::make_pair("init",    Command{ cmd_init,    "[serial] Find the first JS110 (or by serial #) and initialize it." }),
 	std::make_pair("deinit",  Command{ cmd_deinit,  "De-initialize the current JS110." }),
@@ -53,66 +52,47 @@ CommandTable  g_commands = {
 	std::make_pair("trace",   Command{ cmd_trace,   "[on path prefix|off] Get/set tracing and save files in 'path/prefix' (quote if 'path' uses spaces)." }),
 	std::make_pair("rate",    Command{ cmd_rate,    "Set the sample rate to an integer multiple of 1e6." }),
 	std::make_pair("voltage", Command{ cmd_voltage, "Report the internal 2s voltage mean in mv." }),
-	std::make_pair("updates", Command{ cmd_updates, "[on|off] Get/set one-second update state." }),
 	std::make_pair("exit",    Command{ cmd_exit,    "De-initialize (if necessary) and exit." }),
 	std::make_pair("help",    Command{ cmd_help,    "Print this help." }),
 };
 
-/*
- * going old school here so there can be no question
- */
- /**
-  * The EndpointIn data_fn callback puts raw samples into the g_raw_*
-  * buffers. The EndpointIn process_fn reads them out and calls the
-  * RawProcessor, putting the resulting float values into another buffer.
-  * The raw buffers are flushed by the process_fn function. If process_fn
-  * can't respond fast enough, "Buffer overflow" is printed to the console.
-  * The RawProcessor callback flushes the float buffer every time it fills.
-  * It is up to the function that manages the file to flush the processed
-  * sample buffer to disk before closing.
-  *
-  * Here's the flow:
-  *
-  * endpoint_data_fn_callback -> get a packet and call ...
-  * queue_raw_sample -> queue the raw samples and complain if we overvlow.
-  * endpoint_process_fn_callback -> call RawProcessor.process in a loop...
-  * raw_processor_callback -> queue a calibrated sample from RawProcessor
-  * flush_processed_samples_to_disk --> writes calibrated samples to disk
-  */
-  // TODO: Should the ratio of buffer sizes depend on the sample rate?
-constexpr auto RAW_BUFFER_SIZE(1024 * 128);
-constexpr auto CAL_BUFFER_SIZE(1024 * 64);
-// Raw data
-uint16_t g_raw_i[RAW_BUFFER_SIZE];
-uint16_t g_raw_v[RAW_BUFFER_SIZE];
-size_t   g_num_buffered_raw(0);
-// Processed data
-float    g_cal_e[CAL_BUFFER_SIZE];
-size_t   g_num_buffered_cal(0);
 
-#define NUM_FILE_BUFS 8
-#define NUM_E_SAMPLES (1024u * 1024u)
+bool g_device_spinning(false);
+bool g_writer_spinning(false);
 
-float g_file_queue[NUM_FILE_BUFS][NUM_E_SAMPLES];
-size_t g_head_file_buf = 0;
-size_t g_tail_file_buf = 0;
-size_t g_cur_e_pos = 0;
-HANDLE h_file_mutex(NULL);
-
+HANDLE g_device_handle(NULL);
+HANDLE g_writer_handle(NULL);
 
 void
-spin(void)
+device_spin(void)
 {
-	cout << "ENTERING SPIN\n";
+	cout << "ENTERING DEVICE SPIN\n";
 	try
 	{
-		while (g_spinning == true)
+		while (g_device_spinning == true)
 		{
 			g_joulescope.m_device.process(1);
-			/**
-			 * Note that in the Python, there is a command queue here that
-			 * avoids races when issuing control transfers while streaming.
-			 */
+		}
+	}
+	catch (runtime_error re)
+	{
+		cout << "e-[Thread runtime error: " << re.what() << "]" << endl;
+	}
+	catch (...)
+	{
+		cout << "e-[Unknown exception in thread]" << endl;
+	}
+}
+
+void
+writer_spin(void)
+{
+	cout << "ENTERING WRITER SPIN\n";
+	try
+	{
+		while (g_writer_spinning == true)
+		{
+			g_file_writer.wait(1);
 		}
 	}
 	catch (runtime_error re)
@@ -146,9 +126,9 @@ cmd_exit(vector<string> tokens)
 void
 cmd_init(vector<string> tokens)
 {
-	if (g_spinning)
+	if (g_device_spinning)
 	{
-		cout << "e-[Cannot talk to Joulescipe while streaming]" << endl;
+		cout << "e-[Cannot talk to Joulescope while streaming]" << endl;
 		return;
 	}
 	if (g_joulescope.is_open())
@@ -198,7 +178,7 @@ cmd_power(vector<string> tokens)
 		}
 		if (tokens[1] == "on")
 		{
-			if (g_spinning)
+			if (g_device_spinning)
 			{
 				cout << "e-[Cannot talk to Joulescope while tracing]" << endl;
 				return;
@@ -207,7 +187,7 @@ cmd_power(vector<string> tokens)
 		}
 		else if (tokens[1] == "off")
 		{
-			if (g_spinning)
+			if (g_device_spinning)
 			{
 				cout << "e-[Cannot talk to Joulescope while tracing]" << endl;
 				return;
@@ -226,7 +206,7 @@ cmd_power(vector<string> tokens)
 void
 trace_start()
 {
-	if (g_spinning)
+	if (g_device_spinning)
 	{
 		cout << "e-[Trace is already running]" << endl;
 		return;
@@ -240,26 +220,40 @@ trace_start()
 	path fn = g_pfx;
 	fn += g_sfx_energy;
 	path fp = g_tmpdir / fn;
+	g_file_writer.open(fp.string());
 	g_joulescope.power_on(true);
 	g_joulescope.streaming_on(true, &g_raw_buffer);
-	g_spinning = true;
-	g_hspin = CreateThread(
+	g_writer_spinning = true;
+	g_device_spinning = true;
+	g_writer_handle = CreateThread(
 		NULL,
 		0,
-		(LPTHREAD_START_ROUTINE)spin,
+		(LPTHREAD_START_ROUTINE)writer_spin,
 		NULL,
 		0,
 		NULL);
-	if (g_hspin == NULL)
+	if (g_writer_handle == NULL)
 	{
-		throw runtime_error("main::cmd_trace_start() ... Failed to CreateThread");
+		throw runtime_error("main::cmd_trace_start() ... Failed to create writer thread");
+	}
+	g_device_handle = CreateThread(
+		NULL,
+		0,
+		(LPTHREAD_START_ROUTINE)device_spin,
+		NULL,
+		0,
+		NULL);
+	if (g_device_handle == NULL)
+	{
+		throw runtime_error("main::cmd_trace_start() ... Failed to create device thread");
 	}
 }
 
 void
 trace_stop()
 {
-	if (g_spinning == false)
+	DWORD rv;
+	if (g_device_spinning == false)
 	{
 		cout << "e-[Trace isn't running]" << endl;
 		return;
@@ -269,13 +263,21 @@ trace_stop()
 		cout << "e-[No Joulescopes are open]" << endl;
 		return;
 	}
-	g_spinning = false;
-	DWORD rv = WaitForSingleObject(g_hspin, 10000);
+	g_device_spinning = false;
+	rv = WaitForSingleObject(g_device_handle, 10000);
 	if (rv != WAIT_OBJECT_0)
 	{
-		throw runtime_error("main::cmd_trace_stop(): Trace thread failed to exit");
+		throw runtime_error("main::cmd_trace_stop(): Device thread failed to exit");
+	}
+	// DO FINAL WRITE?
+	g_writer_spinning = false;
+	rv = WaitForSingleObject(g_writer_handle, 10000);
+	if (rv != WAIT_OBJECT_0)
+	{
+		throw runtime_error("main::cmd_trace_stop(): Writer thread failed to exit");
 	}
 	g_joulescope.streaming_on(false);
+	g_file_writer.close();
 	// Required by the framework
 	cout
 		<< "m-regfile-fn["
@@ -311,7 +313,7 @@ cmd_trace(vector<string> tokens) {
 			cout << "e-['trace' options are 'on' or 'off']" << endl;
 		}
 	}
-	cout << "m-trace[" << (g_spinning ? "on" : "off") << "]" << endl;
+	cout << "m-trace[" << (g_device_spinning ? "on" : "off") << "]" << endl;
 }
 
 void
@@ -337,31 +339,9 @@ cmd_timer(vector<string> tokens)
 }
 
 void
-cmd_updates(vector<string> tokens)
-{
-	if (tokens.size() > 1)
-	{
-		if (tokens[1] == "on")
-		{
-			g_updates = true;
-		}
-		else if (tokens[1] == "off")
-		{
-			g_updates = false;
-		}
-		else
-		{
-			cout << "e-['updates' options are 'on' or 'off']" << endl;
-			return;
-		}
-	}
-	cout << "m-updates[" << (g_updates ? "on" : "off") << "]" << endl;
-}
-
-void
 cmd_rate(vector<string> tokens)
 {
-	if (g_spinning)
+	if (g_device_spinning)
 	{
 		cout << "e-[Cannot change sample rate while tracing]" << endl;
 		return;
@@ -385,7 +365,7 @@ cmd_rate(vector<string> tokens)
 void
 cmd_voltage(vector<string> tokens)
 {
-	if (g_spinning)
+	if (g_device_spinning)
 	{
 		cout << "e-[Cannot talk to Joulescope while tracing]" << endl;
 		return;
@@ -397,7 +377,7 @@ cmd_voltage(vector<string> tokens)
 void
 cmd_deinit(vector<string> tokens)
 {
-	if (g_spinning)
+	if (g_device_spinning)
 	{
 		trace_stop();
 	}

@@ -149,6 +149,7 @@
     <ClCompile Include="dist\jsoncpp.cpp" />
     <ClCompile Include="device.cpp" />
     <ClCompile Include="file_writer.cpp" />
+    <ClCompile Include="get_last_error.cpp" />
     <ClCompile Include="joulescope.cpp" />
     <ClCompile Include="main.cpp" />
     <ClCompile Include="raw_buffer.cpp" />
