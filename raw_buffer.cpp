@@ -1,7 +1,5 @@
 #include "raw_buffer.hpp"
 
-#include <iostream>
-
 INT32 BADPACKET[JS110_SAMPLES_PER_PACKET] = {
 	-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
 	-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
@@ -23,7 +21,6 @@ bool RawBuffer::add_data(vector<UCHAR>& data)
 {
 	JoulescopePacket* pkts = (JoulescopePacket*)data.data();
 	size_t num_pkts = data.size() / 512;
-	//cout << "RawBuffer::add_data(), " << num_pkts << " packets\n";
 	while (num_pkts--)
 	{
 		add_packet(pkts++);
@@ -39,7 +36,6 @@ void RawBuffer::add_packet(JoulescopePacket* pkt)
 		m_total_dropped_pkts += delta;
 		while (delta-- > 1)
 		{
-			cout << "BAD PACKET\n";
 			copy_raw_samples((UINT32*)BADPACKET);
 		}
 	}
@@ -52,8 +48,8 @@ void RawBuffer::add_packet(JoulescopePacket* pkt)
 
 void RawBuffer::copy_raw_samples(UINT32 *samples)
 {
-	CopyMemory(&m_raw[m_raw_ptr], samples, JS110_SAMPLES_PER_PACKET * 4);
-	m_raw_ptr += (JS110_SAMPLES_PER_PACKET * 4);
+	CopyMemory(&(m_raw[m_raw_ptr]), samples, JS110_SAMPLES_PER_PACKET * sizeof(UINT32));
+	m_raw_ptr += JS110_SAMPLES_PER_PACKET;
 	if (m_raw_ptr >= MAX_RAW_SAMPLES)
 	{
 		throw runtime_error("Raw buffer overflow");
@@ -71,11 +67,10 @@ void RawBuffer::copy_raw_samples(UINT32 *samples)
 
 bool RawBuffer::process_data(void)
 {
-	//cout << "RawBuffer::process_data\n";
 	for (size_t j(0); j < m_raw_ptr; ++j)
 	{
-		uint32_t i = (m_raw[j] >> 16) & 0xFFFF;
-		uint32_t v = m_raw[j] & 0xFFFF;
+		uint16_t v = (m_raw[j] >> 16) & 0xFFFF;
+		uint16_t i = m_raw[j] & 0xFFFF;
 		m_raw_processor->process(i, v);
 	}
 	m_raw_ptr = 0;
