@@ -64,18 +64,23 @@ FileWriter::open(string fn)
 	{
 		throw runtime_error("Unable to create FileWriter file handle");
 	}
-	m_events[0] = CreateEvent(NULL, TRUE, FALSE, NULL);
-	m_events[1] = CreateEvent(NULL, TRUE, FALSE, NULL);
 	m_file_offset = 0;
 	m_total_samples = 0;
+	m_total_nan = 0;
 	m_total_accumulated = 0;
 	m_buffer_pos = 0;
 	//assert(2'000'000 % m_sample_rate == 0);
 	m_samples_per_downsample = 2'000'000u / m_sample_rate;
+	m_timestamps.clear();
 	// Write the file header
 	uint8_t bytes[5];
+	union {
+		float f;
+		uint32_t dw;
+	} pun;
+	pun.f = (float)m_sample_rate;
 	bytes[0] = 0xf1; // Version byte TODO: sync with framework
-	CopyMemory(&bytes[1], &m_sample_rate, sizeof(float));
+	CopyMemory(&bytes[1], &pun.dw, sizeof(uint32_t));
 	queue_bytes(&bytes, sizeof(bytes));
 	wait(5000);
 }
@@ -105,6 +110,10 @@ FileWriter::save_acc(void)
 	unsigned saved_head;
 	unsigned saved_len;
 	m_pages[m_head][m_buffer_pos] = m_acc;
+	if (isnan(m_acc))
+	{
+		++m_total_nan;
+	}
 	++m_buffer_pos;
 	if (m_buffer_pos == MAX_PAGE_SIZE)
 	{
@@ -191,30 +200,4 @@ FileWriter::wait(DWORD msec)
 	{
 		throw runtime_error("Wait failed");
 	}
-}
-
-void
-FileWriter::write_timestamps(string fn)
-{
-	fstream file;
-	file.exceptions(std::ifstream::failbit | std::ifstream::badbit);
-	file.open(fn, ios::out);
-	file << "[" << endl;
-	for (size_t i(0); i < m_timestamps.size(); ++i)
-	{
-		file << "\t" << m_timestamps[i];
-		if (i < (m_timestamps.size() - 1))
-		{
-			file << ",";
-		}
-		file << endl;
-	}
-	file << "]" << endl;
-	file.close();
-	// Required by the framework
-	cout
-		<< "m-regfile-fn["
-		<< fn
-		<< "]-type[etime]-name[js110]"
-		<< endl;
 }

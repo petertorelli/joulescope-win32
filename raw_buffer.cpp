@@ -30,6 +30,7 @@ bool RawBuffer::add_data(vector<UCHAR>& data)
 
 void RawBuffer::add_pkt(JoulescopePacket* pkt)
 {
+	++m_total_pkts;
 	UINT16 delta = pkt->pkt_index - m_last_pkt_index;
 	if (delta > 1)
 	{

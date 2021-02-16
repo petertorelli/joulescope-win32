@@ -23,6 +23,9 @@ using namespace std;
 using namespace std::filesystem;
 using namespace boost;
 
+const string EEMBC_EMON_SUFFIX("-energy.bin");
+const string EEMBC_TIMESTAMP_SUFFIX("-timestamps.json");
+
 float		 g_drop_thresh(0.1f);
 
 // These are the primary "legos" that build the tracer.
@@ -31,10 +34,9 @@ RawProcessor g_raw_processor;
 FileWriter   g_file_writer;
 RawBuffer    g_raw_buffer;
 // Per the EEMBC framework, this is a file convention
-const path   g_sfx_energy("-energy.bin");
-const path   g_sfx_timestamps("-timestamps.json");
 path         g_tmpdir(".");
-path         g_pfx("js110");
+path         g_fp_energy(g_tmpdir / string("js110" + EEMBC_EMON_SUFFIX));
+path         g_fp_timestamps(g_tmpdir / string("js110" + EEMBC_TIMESTAMP_SUFFIX));
 // There are three spinning loops in this code:
 bool         g_device_spinning(false); // Device-driver process loop
 bool         g_writer_spinning(false); // Async file write tail-pointer incr.
@@ -126,10 +128,10 @@ writer_spin(void)
 }
 
 void
-trace_start(string fn)
+trace_start(void)
 {
 	g_raw_buffer.reset();
-	g_file_writer.open(fn);
+	g_file_writer.open(g_fp_energy.string());
 	g_writer_spinning = true;
 	g_writer_thread = CreateThread(
 		NULL,
@@ -165,7 +167,85 @@ trace_start(string fn)
 }
 
 void
-trace_stop()
+interpolate_nans(void)
+{
+	// Need a C++ way to do this
+	FILE *fi = NULL;
+	FILE *fo = NULL;
+	errno_t err;
+	err = fopen_s(&fi, g_fp_energy.filename().string().c_str(), "rb");
+	if (err) throw runtime_error("Failed to open input file in nan flow");
+	err = fopen_s(&fo, g_fp_energy.filename().string().c_str(), "rb");
+	if (err) throw runtime_error("Failed to open output file in nan flow");
+	if (fi && fo)
+	{
+		float buf[1024];
+		float last_good_val = NAN;
+		float y0 = NAN, y1 = NAN, dy, inc;
+		size_t t0 = 0, t1 = 0, dt;
+		bool tracking = false;
+		size_t sample_idx = 0;
+		cout << "Removing tasty NaNs\n";
+		fseek(fi, 5, 0);
+		fseek(fo, 5, 0);
+		while (!feof(fi)) {
+			size_t numread = fread(buf, sizeof(float), 1024, fi);
+			cout << "Read " << numread << endl;
+			for (size_t i = 0; i < numread; ++i)
+			{
+				if (isnan(buf[i]))
+				{
+					if (!tracking)
+					{
+						y0 = last_good_val;
+						t0 = sample_idx;
+						tracking = true;
+					}
+				}
+				else
+				{
+					if (tracking)
+					{
+						tracking = false;
+						y1 = buf[i];
+						t1 = sample_idx;
+						if (isnan(y0))
+						{
+							throw runtime_error("Cannot interpolate if y0 is NAN");
+						}
+						dt = t1 - t0;
+						dy = t1 - y0;
+						inc = dt / dy;
+						if (dt == 0)
+						{
+							throw runtime_error("Cannot interpolate if dt is zero");
+						}
+					}
+					else
+					{
+						last_good_val = buf[i];
+					}
+				}
+				++sample_idx;
+			}
+		}
+		if (tracking)
+		{
+			throw runtime_error("Cannot interpolate when file ends with NAN");
+		}
+	}
+	if (fi)
+	{
+		fclose(fi);
+	}
+	if (fo)
+	{
+		fclose(fo);
+	}
+}
+
+void
+trace_stop(void)
 {
 	DWORD rv;
 	g_device_spinning = false;
@@ -192,10 +272,45 @@ trace_stop()
 	// Required by the framework
 	cout
 		<< "m-regfile-fn["
-		<< g_pfx.string()
-		<< g_sfx_energy.string()
+		<< g_fp_energy.filename().string()
 		<< "]-type[emon]-name[js110]"
 		<< endl;
+
+	// Always write out a timestamp file, even if empty
+	fstream file;
+	file.exceptions(std::ifstream::failbit | std::ifstream::badbit);
+	file.open(g_fp_timestamps, ios::out);
+	file << "[" << endl;
+	for (size_t i(0); i < g_file_writer.m_timestamps.size(); ++i)
+	{
+		file << "\t" << g_file_writer.m_timestamps[i];
+		if (i < (g_file_writer.m_timestamps.size() - 1))
+		{
+			file << ",";
+		}
+		file << endl;
+	}
+	file << "]" << endl;
+	file.close();
+	// Required by the framework
+	cout
+		<< "m-regfile-fn["
+		<< g_fp_timestamps.filename().string()
+		<< "]-type[etime]-name[js110]"
+		<< endl;
+	// Did we drop any packets? If so, run lengthy flow
+	float pct = g_file_writer.nanpct();
+	cout
+		<< "m-[Found "
+		<< setprecision(2) << pct << "% bad samples; limit is "
+		<< g_drop_thresh << "%" << endl;
+	if (pct > g_drop_thresh)
+	{
+		cout
+			<< "e-[Bad sample percentage exceeded "
+			<< setprecision(2) << g_drop_thresh << "%"
+			<< endl;
+	}
 }
 
 void
@@ -302,15 +417,12 @@ cmd_trace(vector<string> tokens) {
 				}
 				if (tokens.size() > 3)
 				{
-					g_pfx = tokens[3];
+					g_fp_energy = g_tmpdir / (tokens[3] + EEMBC_EMON_SUFFIX);
+					g_fp_timestamps = g_tmpdir / (tokens[3] + EEMBC_TIMESTAMP_SUFFIX);
 				}
 				// Always print this on trace start so we detect any cheating.
 				cout << "m-dropthresh[" << std::setprecision(3) << g_drop_thresh << "]" << endl;
-				// Per the EEMBC framework, build the trace filename.
-				path fn = g_pfx;
-				fn += g_sfx_energy;
-				path fp = g_tmpdir / fn;
-				trace_start(fp.string());
+				trace_start();
 			}
 		}
 		else if (tokens[1] == "off")
@@ -362,7 +474,7 @@ cmd_rate(vector<string> tokens)
 	{
 		int rate = stoi(tokens[1]);
 
-		if ((rate < 1) || (MAX_SAMPLE_RATE % rate) != 0)
+		if ((rate < 1) || (rate > 2'000'000) || (MAX_SAMPLE_RATE % rate) != 0)
 		{
 			cout << "e-[Sample rate must be a factor of 2'000'000]" << endl;
 		}
