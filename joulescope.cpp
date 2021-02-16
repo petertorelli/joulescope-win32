@@ -116,10 +116,14 @@ Joulescope::get_voltage(void)
 }
 
 void
-Joulescope::streaming_on(bool on, RawBuffer *raw_buffer) //EndpointIn_data_fn_t data_fn, EndpointIn_process_fn_t process_fn, EndpointIn_stop_fn_t stop_fn)
+Joulescope::streaming_on(bool on)
 {
 	if (on)
 	{
+		if (m_raw_buffer_ptr == nullptr)
+		{
+			throw runtime_error("Joulescope needs a raw buffer pointer");
+		}
 		m_state.settings.streaming = JoulescopeState::Streaming::NORMAL;
 		update_settings();
 		UINT transfers_outstanding =    8; // the maximum number of USB transfers issued simultaneously [8]
@@ -128,12 +132,7 @@ Joulescope::streaming_on(bool on, RawBuffer *raw_buffer) //EndpointIn_data_fn_t 
 			STREAMING_ENDPOINT_ID,
 			transfers_outstanding,
 			transfer_length * BULK_IN_LENGTH,
-			raw_buffer
-			/*
-			data_fn,
-			process_fn,
-			stop_fn
-			*/
+			m_raw_buffer_ptr
 		);
 	}
 	else

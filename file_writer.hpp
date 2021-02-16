@@ -11,22 +11,34 @@ using namespace std;
 #define MAX_OVERLAPPED_WRITES 8 // don't change; using mask in save_acc()
 #define MAX_PAGE_SIZE (64 * 1024) // in floats
 
+#define QUEUE_BYTES_EVENT 1
+#define QUEUE_PAGE_EVENT 0
+
 class FileWriter
 {
 public:
+	bool m_observe_timestamps = false;
 	void add(float i, float v, uint8_t bits);
 	void open(string fn);
 	void close(void);
 	void wait(DWORD msec);
-	bool m_observe_timestamps = false;
+	unsigned int samplerate(void)
+	{
+		return m_sample_rate;
+	}
+	void samplerate(unsigned int rate, unsigned int max)
+	{
+		m_sample_rate = rate;
+		m_samples_per_downsample = max / m_sample_rate;
+	}
 private:
-	HANDLE        m_event;
+	HANDLE        m_events[2];
 	HANDLE        m_file_handle;
 	float         m_acc = 0;
 	size_t        m_total_accumulated = 0;
 	size_t        m_total_samples = 0;
-	size_t        m_samples_per_downsample = 1000;
-	float         m_sample_rate = 2e6f / 1000.0f;
+	size_t        m_samples_per_downsample = 2'000'000 / 1000;
+	unsigned int  m_sample_rate = 1000;
 	OVERLAPPED    m_ov[MAX_OVERLAPPED_WRITES];
 	OVERLAPPED    m_overlapped; // For queue_bytes
 	float         m_pages[MAX_OVERLAPPED_WRITES][MAX_PAGE_SIZE];

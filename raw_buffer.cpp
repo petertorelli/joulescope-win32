@@ -23,12 +23,12 @@ bool RawBuffer::add_data(vector<UCHAR>& data)
 	size_t num_pkts = data.size() / 512;
 	while (num_pkts--)
 	{
-		add_packet(pkts++);
+		add_pkt(pkts++);
 	}
 	return false;
 }
 
-void RawBuffer::add_packet(JoulescopePacket* pkt)
+void RawBuffer::add_pkt(JoulescopePacket* pkt)
 {
 	UINT16 delta = pkt->pkt_index - m_last_pkt_index;
 	if (delta > 1)
@@ -36,7 +36,7 @@ void RawBuffer::add_packet(JoulescopePacket* pkt)
 		m_total_dropped_pkts += delta;
 		while (delta-- > 1)
 		{
-			copy_raw_samples((UINT32*)BADPACKET);
+			copy_raw_samples((UINT32 *)BADPACKET);
 		}
 	}
 	else
@@ -48,10 +48,12 @@ void RawBuffer::add_packet(JoulescopePacket* pkt)
 
 void RawBuffer::copy_raw_samples(UINT32 *samples)
 {
-	CopyMemory(&(m_raw[m_raw_ptr]), samples, JS110_SAMPLES_PER_PACKET * sizeof(UINT32));
-	m_raw_ptr += JS110_SAMPLES_PER_PACKET;
-	if (m_raw_ptr >= MAX_RAW_SAMPLES)
+	CopyMemory(&(m_raw[m_raw_pos]), samples,
+		JS110_SAMPLES_PER_PACKET * sizeof(UINT32));
+	m_raw_pos += JS110_SAMPLES_PER_PACKET;
+	if (m_raw_pos >= MAX_RAW_SAMPLES)
 	{
+		// This means we couldn't call the RawProcesor fast enough.
 		throw runtime_error("Raw buffer overflow");
 	}
 }
@@ -67,12 +69,12 @@ void RawBuffer::copy_raw_samples(UINT32 *samples)
 
 bool RawBuffer::process_data(void)
 {
-	for (size_t j(0); j < m_raw_ptr; ++j)
+	for (size_t j(0); j < m_raw_pos; ++j)
 	{
 		uint16_t v = (m_raw[j] >> 16) & 0xFFFF;
 		uint16_t i = m_raw[j] & 0xFFFF;
 		m_raw_processor->process(i, v);
 	}
-	m_raw_ptr = 0;
+	m_raw_pos = 0;
 	return false;
 }

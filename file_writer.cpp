@@ -1,5 +1,14 @@
 #include "file_writer.hpp"
 
+#include <iostream>
+
+/**
+ * Add a calibrated i/v sample to the raw buffer as energy. Downsample as
+ * needed by using the accumulator. When the downsample interval elapses,
+ * call save_acc().
+ * 
+ * Also check to see if the GPIO IN0 changed (falling).
+ */
 void
 FileWriter::add(float i, float v, uint8_t bits)
 {
@@ -16,6 +25,10 @@ FileWriter::add(float i, float v, uint8_t bits)
 	gpi0_check(m_last_gpi0, ((bits >> 4) & 1) == 1);
 }
 
+/**
+ * If the GPIO IN0 generated a falling edge, capture the approximate time.
+ * The vector is written out on close.
+ */
 void
 FileWriter::gpi0_check(bool& last, bool current)
 {
@@ -32,6 +45,10 @@ FileWriter::gpi0_check(bool& last, bool current)
 	last = current;
 }
 
+/**
+ * Create a new file and write out the prologue. Also, act like a constructor
+ * and reset some key variables.
+ */
 void
 FileWriter::open(string fn)
 {
@@ -47,20 +64,25 @@ FileWriter::open(string fn)
 	{
 		throw runtime_error("Unable to create FileWriter file handle");
 	}
-	m_event = CreateEvent(NULL, TRUE, FALSE, NULL);
+	m_events[0] = CreateEvent(NULL, TRUE, FALSE, NULL);
+	m_events[1] = CreateEvent(NULL, TRUE, FALSE, NULL);
 	m_file_offset = 0;
 	m_total_samples = 0;
 	m_total_accumulated = 0;
 	m_buffer_pos = 0;
-	m_sample_rate = (2e6f / (float)m_samples_per_downsample);
-	// We write 5-byte header which isn't a page, so use a quick hack.
+	//assert(2'000'000 % m_sample_rate == 0);
+	m_samples_per_downsample = 2'000'000u / m_sample_rate;
+	// Write the file header
 	uint8_t bytes[5];
 	bytes[0] = 0xf1; // Version byte TODO: sync with framework
 	CopyMemory(&bytes[1], &m_sample_rate, sizeof(float));
 	queue_bytes(&bytes, sizeof(bytes));
-	wait(10000);
+	wait(5000);
 }
 
+/**
+ * Write out partial data if any, and close the file.
+ */
 void
 FileWriter::close(void)
 {
@@ -68,11 +90,15 @@ FileWriter::close(void)
 	if (m_buffer_pos)
 	{
 		queue_page(m_head, m_buffer_pos);
-		wait(10000);
+		wait(5000);
 	}
 	CloseHandle(m_file_handle);
 }
 
+/**
+ * Store the current accumulator in the correct page / offset. If we've filled
+ * a page, queue it for a write and move to a new one.
+ */
 void
 FileWriter::save_acc(void)
 {
@@ -99,7 +125,7 @@ void
 FileWriter::queue_page(unsigned page, unsigned len)
 {
 	ZeroMemory(&m_ov[page], sizeof(OVERLAPPED));
-	m_ov[page].hEvent = m_event;
+	m_ov[page].hEvent = m_events[QUEUE_PAGE_EVENT];
 	m_ov[page].OffsetHigh = (m_file_offset >> 32) & 0xFFFF'FFFF;
 	m_ov[page].Offset = m_file_offset & 0xFFFF'FFFF;
 	if (!WriteFile(
@@ -122,7 +148,7 @@ void
 FileWriter::queue_bytes(LPCVOID bytes, unsigned len)
 {
 	ZeroMemory(&m_overlapped, sizeof(OVERLAPPED));
-	m_overlapped.hEvent = m_event;
+	m_overlapped.hEvent = m_events[QUEUE_BYTES_EVENT];
 	m_overlapped.OffsetHigh = (m_file_offset >> 32) & 0xFFFF'FFFF;
 	m_overlapped.Offset = m_file_offset & 0xFFFF'FFFF;
 	if (!WriteFile(
@@ -144,11 +170,22 @@ FileWriter::queue_bytes(LPCVOID bytes, unsigned len)
 void
 FileWriter::wait(DWORD msec)
 {
-	DWORD ret = WaitForSingleObject(m_event, msec);
+	DWORD ret = WaitForMultipleObjects(2, m_events, FALSE, msec);
 	if (ret < MAXIMUM_WAIT_OBJECTS)
 	{
-		ResetEvent(m_event);
-		m_tail = (m_tail + 1) & 0x7;
+		DWORD event = ret - WAIT_OBJECT_0;
+		switch (event) {
+		case QUEUE_PAGE_EVENT:
+			m_tail = (m_tail + 1) & 0x7;
+			ResetEvent(m_events[event]);
+			break;
+		case QUEUE_BYTES_EVENT:
+			ResetEvent(m_events[event]);
+			break;
+		default:
+			throw runtime_error("Unexpected wait object");
+			break;
+		}
 	}
 	else if (ret != WAIT_TIMEOUT)
 	{

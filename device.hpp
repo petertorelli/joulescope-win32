@@ -361,7 +361,7 @@ public:
 	void read_stream_stop(UCHAR endpoint_id);
 
 	void _abort(int stop_code, std::string msg);
-	void process(float timeout);
+	void process(DWORD msec);
 private:
 	std::wstring m_path;
 	HANDLE m_file;

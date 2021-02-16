@@ -1,6 +1,5 @@
 /**
  * Copyright 2021 Peter Torelli
- * Copyright 2020 Jetperch LLC
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,91 +17,185 @@
 #include "main.hpp"
 // Note: Only the device and raw_processor are critical.
 #define PYJOULESCOPE_GITHUB_HEAD "6b92e38"
-#define VERSION "1.4.0"
+#define VERSION "1.5.0"
 
-/**
- * TODO
- * 1. wide strings
- * 2. pass a reference for m_data vectors rather than a copy
- * 3. fix the m_overlapped buffer grow/shrink issue
- */
 using namespace std;
 using namespace std::filesystem;
 using namespace boost;
 
-Joulescope    g_joulescope;
-RawProcessor  g_raw_processor;
-FileWriter    g_file_writer;
-RawBuffer     g_raw_buffer;
+float		 g_drop_thresh(0.1f);
 
-path          g_tmpdir(".");
-path          g_pfx("js110");
-const path    g_sfx_energy("-energy.bin");
-const path    g_sfx_timestamps("-timestamps.json");
-
-bool          g_waiting_on_user(false);
-bool          g_observe_timestamps(false);
-float		  g_drop_thresh(0.1f);
-
-CommandTable  g_commands = {
-	std::make_pair("init",    Command{ cmd_init,    "[serial] Find the first JS110 (or by serial #) and initialize it." }),
-	std::make_pair("deinit",  Command{ cmd_deinit,  "De-initialize the current JS110." }),
-	std::make_pair("power",   Command{ cmd_power,   "[on|off] Get/set output power state." }),
-	std::make_pair("timer",   Command{ cmd_timer,   "[on|off] Get/set timestamping state." }),
-	std::make_pair("trace",   Command{ cmd_trace,   "[on path prefix|off] Get/set tracing and save files in 'path/prefix' (quote if 'path' uses spaces)." }),
-	std::make_pair("rate",    Command{ cmd_rate,    "Set the sample rate to an integer multiple of 1e6." }),
-	std::make_pair("voltage", Command{ cmd_voltage, "Report the internal 2s voltage mean in mv." }),
-	std::make_pair("exit",    Command{ cmd_exit,    "De-initialize (if necessary) and exit." }),
-	std::make_pair("help",    Command{ cmd_help,    "Print this help." }),
+// These are the primary "legos" that build the tracer.
+Joulescope   g_joulescope;
+RawProcessor g_raw_processor;
+FileWriter   g_file_writer;
+RawBuffer    g_raw_buffer;
+// Per the EEMBC framework, this is a file convention
+const path   g_sfx_energy("-energy.bin");
+const path   g_sfx_timestamps("-timestamps.json");
+path         g_tmpdir(".");
+path         g_pfx("js110");
+// There are three spinning loops in this code:
+bool         g_device_spinning(false); // Device-driver process loop
+bool         g_writer_spinning(false); // Async file write tail-pointer incr.
+bool         g_userin_spinning(false); // Wait on user input.
+HANDLE       g_device_thread(NULL);
+HANDLE       g_writer_thread(NULL);
+CommandTable g_commands = {
+	make_pair("init",    Command{ cmd_init,    "[serial] Find the first JS110 (or by serial #) and initialize it." }),
+	make_pair("deinit",  Command{ cmd_deinit,  "De-initialize the current JS110." }),
+	make_pair("power",   Command{ cmd_power,   "[on|off] Get/set output power state." }),
+	make_pair("timer",   Command{ cmd_timer,   "[on|off] Get/set timestamping state." }),
+	make_pair("trace",   Command{ cmd_trace,   "[on path prefix|off] Get/set tracing and save files in 'path/prefix' (quote if 'path' uses spaces)." }),
+	make_pair("rate",    Command{ cmd_rate,    "Set the sample rate to an integer multiple of 1e6." }),
+	make_pair("voltage", Command{ cmd_voltage, "Report the internal 2s voltage average in mv." }),
+	make_pair("exit",    Command{ cmd_exit,    "De-initialize (if necessary) and exit." }),
+	make_pair("help",    Command{ cmd_help,    "Print this help." }),
 };
 
-
-bool g_device_spinning(false);
-bool g_writer_spinning(false);
-
-HANDLE g_device_handle(NULL);
-HANDLE g_writer_handle(NULL);
-
+/**
+ * This thread handles USB endpoint processing in the driver (1 Hz). The
+ * function `process()` waits on an array of events and determines if an
+ * endpoint returned data or of an asynchronous control transfer completed.
+ */
 void
 device_spin(void)
 {
-	cout << "ENTERING DEVICE SPIN\n";
 	try
 	{
 		while (g_device_spinning == true)
 		{
-			g_joulescope.m_device.process(1);
+			/**
+			 * By default the device is configured for eight outstsanding
+			 * endoint transfers, each with 256 bulk transfers of 
+			 * 512 bytes, or 8*256*512=1MB. The pending overlapped transfers
+			 * are stored in a deque<>. However, the RawBuffer used by the
+			 * device can overflow as these transfers are deposited into it
+			 * by the device `_expire` operation that puts them into the
+			 * RawBuffer via `add_slice`. We need to service this routine
+			 * at the rate of the RawBuffer, which is 16MB. Since the JS110
+			 * can send back 2M samples, or 8MB/sec, we should service this
+			 * at least 2x the theoretical max of the RawBuffer.
+			 */
+			g_joulescope.m_device.process(1000); // milliseconds
 		}
 	}
 	catch (runtime_error re)
 	{
-		cout << "e-[Thread runtime error: " << re.what() << "]" << endl;
+		cout << "e-[Device thread runtime error: " << re.what() << "]" << endl;
 	}
 	catch (...)
 	{
-		cout << "e-[Unknown exception in thread]" << endl;
+		cout << "e-[Unknown exception in device thread]" << endl;
 	}
 }
 
+/**
+ * This thread advances the tail pointer in the file writer ring-buffer. The
+ * file writer downsamples raw data sent to it on the `process_signal`
+ * endpoint callback (by way of a RawProcessor callback). Every time an entry
+ * in the ring buffer fills, it is shipped of to an async WriteFile.
+ */
 void
 writer_spin(void)
 {
-	cout << "ENTERING WRITER SPIN\n";
 	try
 	{
 		while (g_writer_spinning == true)
 		{
-			g_file_writer.wait(1);
+			/**
+			 * This polling rate must exceed the bandwidth of the FileWriter.
+			 * It has 8 pages of 64K floats, or 8*64*1024*4=2MBytes. Since
+			 * the speed at which this drains depends on the downsampling rate
+			 * and the speed of the storage media, we need to process quickly.
+			 * Worst case would be the full 2Msamples per second which would
+			 * be 8MB/sec, so the slowest polling rate is 250msec. Since this
+			 * isn't an RTOS, go aggressive, 10msec.
+			 */
+			g_file_writer.wait(10); // milliseconds
 		}
 	}
 	catch (runtime_error re)
 	{
-		cout << "e-[Thread runtime error: " << re.what() << "]" << endl;
+		cout << "e-[Writer thread runtime error: " << re.what() << "]" << endl;
 	}
 	catch (...)
 	{
-		cout << "e-[Unknown exception in thread]" << endl;
+		cout << "e-[Unknown exception in writer thread]" << endl;
 	}
+}
+
+void
+trace_start(string fn)
+{
+	g_raw_buffer.reset();
+	g_file_writer.open(fn);
+	g_writer_spinning = true;
+	g_writer_thread = CreateThread(
+		NULL,
+		0,
+		(LPTHREAD_START_ROUTINE)writer_spin,
+		NULL,
+		0,
+		NULL);
+	if (g_writer_thread == NULL)
+	{
+		throw runtime_error("Failed to create writer thread");
+	}
+	/**
+	 * NOTE:
+	 * We cannot call `streaming_on` after the device loop starts
+	 * because it calls into `process()` which is not re-entrant.
+	 * This can cause the deques to unexpectedly go to zero or
+	 * samples to be lost or worse.
+	 */
+	g_joulescope.streaming_on(true);
+	g_device_spinning = true;
+	g_device_thread = CreateThread(
+		NULL,
+		0,
+		(LPTHREAD_START_ROUTINE)device_spin,
+		NULL,
+		0,
+		NULL);
+	if (g_device_thread == NULL)
+	{
+		throw runtime_error("Failed to create device thread");
+	}
+}
+
+void
+trace_stop()
+{
+	DWORD rv;
+	g_device_spinning = false;
+	rv = WaitForSingleObject(g_device_thread, 10000);
+	if (rv != WAIT_OBJECT_0)
+	{
+		throw runtime_error("Device thread failed to exit");
+	}
+	g_writer_spinning = false;
+	rv = WaitForSingleObject(g_writer_thread, 10000);
+	if (rv != WAIT_OBJECT_0)
+	{
+		throw runtime_error("Writer thread failed to exit");
+	}
+	/**
+	 * NOTE:
+	 * We cannot call `streaming_off` before the device loop stops
+	 * because it calls into `process()` which is not re-entrant.
+	 * This can cause the deques to unexpectedly go to zero or
+	 * samples to be lost or worse.
+	 */
+	g_joulescope.streaming_on(false);
+	g_file_writer.close();
+	// Required by the framework
+	cout
+		<< "m-regfile-fn["
+		<< g_pfx.string()
+		<< g_sfx_energy.string()
+		<< "]-type[emon]-name[js110]"
+		<< endl;
 }
 
 void
@@ -118,7 +211,7 @@ void
 cmd_exit(vector<string> tokens)
 {
 	cmd_deinit(vector<string>());
-	// Required to let the host know the exit was OK
+	// Per EEMBC, required to let the host know the exit was OK
 	cout << "m-exit" << endl;
 	exit(0);
 }
@@ -126,14 +219,9 @@ cmd_exit(vector<string> tokens)
 void
 cmd_init(vector<string> tokens)
 {
-	if (g_device_spinning)
-	{
-		cout << "e-[Cannot talk to Joulescope while streaming]" << endl;
-		return;
-	}
 	if (g_joulescope.is_open())
 	{
-		cout << "e-[A joulescope is already initialized, deinit first]" << endl;
+		cout << "e-[A Joulescope is already initialized, deinit first]" << endl;
 		return;
 	}
 	string serial = tokens.size() < 2 ? "" : tokens[1];
@@ -155,13 +243,13 @@ cmd_init(vector<string> tokens)
 		// The RawBuffer is connected to the Joulescope with Joulescope::trace_on();
 		g_joulescope.open(path.c_str());
 		g_raw_buffer.set_raw_processor(&g_raw_processor);
+		g_joulescope.set_raw_buffer(&g_raw_buffer);
 		g_raw_processor.calibration_set(g_joulescope.m_calibration);
 		g_raw_processor.set_writer(&g_file_writer);
-
+		g_file_writer.samplerate(1000, MAX_SAMPLE_RATE);
 		wcout << "m-[Opened Joulescope at path " << path << "]" << endl;
 	}
-	// A bit of a hack b/c JS110 LibUSB/WinUSB can be erratic.
-	if (tokens.size() == 3) {
+	if (tokens.size() > 2) {
 		g_drop_thresh = stof(tokens[2]);
 	}
 }
@@ -171,146 +259,70 @@ cmd_power(vector<string> tokens)
 {
 	if (tokens.size() > 1)
 	{
-		if (g_joulescope.is_open() == false)
+		if (g_device_spinning)
+		{
+			// `power_on` is not thread safe, see notes in trace_start/stop.
+			cout << "e-[Cannot change power state while tracing]" << endl;
+		}
+		else if (g_joulescope.is_open() == false)
 		{
 			cout << "e-[No Joulescopes are open]" << endl;
-			return;
 		}
-		if (tokens[1] == "on")
+		else if (tokens[1] == "on")
 		{
-			if (g_device_spinning)
-			{
-				cout << "e-[Cannot talk to Joulescope while tracing]" << endl;
-				return;
-			}
 			g_joulescope.power_on(true);
 		}
 		else if (tokens[1] == "off")
 		{
-			if (g_device_spinning)
-			{
-				cout << "e-[Cannot talk to Joulescope while tracing]" << endl;
-				return;
-			}
 			g_joulescope.power_on(false);
 		}
 		else
 		{
-			cout << "e-['power' options are 'on' or 'off']" << endl;
-			return;
+			cout << "e-['power' takes 'on' or 'off']" << endl;
+	}
 		}
-	}
 	cout << "m-power[" << (g_joulescope.is_powered() ? "on" : "off") << "]" << endl;
-}
-
-void
-trace_start()
-{
-	if (g_device_spinning)
-	{
-		cout << "e-[Trace is already running]" << endl;
-		return;
-	}
-	if (!g_joulescope.is_open())
-	{
-		cout << "e-[No Joulescopes are open]" << endl;
-		return;
-	}
-	// Seems awkward to do this here.
-	path fn = g_pfx;
-	fn += g_sfx_energy;
-	path fp = g_tmpdir / fn;
-	g_file_writer.open(fp.string());
-	g_joulescope.power_on(true);
-	g_joulescope.streaming_on(true, &g_raw_buffer);
-	g_writer_spinning = true;
-	g_device_spinning = true;
-	g_writer_handle = CreateThread(
-		NULL,
-		0,
-		(LPTHREAD_START_ROUTINE)writer_spin,
-		NULL,
-		0,
-		NULL);
-	if (g_writer_handle == NULL)
-	{
-		throw runtime_error("main::cmd_trace_start() ... Failed to create writer thread");
-	}
-	g_device_handle = CreateThread(
-		NULL,
-		0,
-		(LPTHREAD_START_ROUTINE)device_spin,
-		NULL,
-		0,
-		NULL);
-	if (g_device_handle == NULL)
-	{
-		throw runtime_error("main::cmd_trace_start() ... Failed to create device thread");
-	}
-}
-
-void
-trace_stop()
-{
-	DWORD rv;
-	if (g_device_spinning == false)
-	{
-		cout << "e-[Trace isn't running]" << endl;
-		return;
-	}
-	if (!g_joulescope.is_open())
-	{
-		cout << "e-[No Joulescopes are open]" << endl;
-		return;
-	}
-	g_device_spinning = false;
-	rv = WaitForSingleObject(g_device_handle, 10000);
-	if (rv != WAIT_OBJECT_0)
-	{
-		throw runtime_error("main::cmd_trace_stop(): Device thread failed to exit");
-	}
-	// DO FINAL WRITE?
-	g_writer_spinning = false;
-	rv = WaitForSingleObject(g_writer_handle, 10000);
-	if (rv != WAIT_OBJECT_0)
-	{
-		throw runtime_error("main::cmd_trace_stop(): Writer thread failed to exit");
-	}
-	g_joulescope.streaming_on(false);
-	g_file_writer.close();
-	// Required by the framework
-	cout
-		<< "m-regfile-fn["
-		<< g_pfx.string()
-		<< g_sfx_energy.string()
-		<< "]-type[emon]-name[js110]"
-		<< endl;
 }
 
 void
 cmd_trace(vector<string> tokens) {
 	if (tokens.size() > 1)
 	{
-		if (tokens[1] == "on")
+		if (g_joulescope.is_open() == false)
 		{
-			if (tokens.size() != 4)
+			cout << "e-[No Joulescopes are open]" << endl;
+		}
+		else if (tokens[1] == "on")
+		{
+			if (!g_device_spinning)
 			{
-				cout << "e-['trace on' requires TMPDIR and PFX']" << endl;
-				return;
+				if (tokens.size() > 2)
+				{
+					g_tmpdir = tokens[2];
+				}
+				if (tokens.size() > 3)
+				{
+					g_pfx = tokens[3];
+				}
+				// Always print this on trace start so we detect any cheating.
+				cout << "m-dropthresh[" << std::setprecision(3) << g_drop_thresh << "]" << endl;
+				// Per the EEMBC framework, build the trace filename.
+				path fn = g_pfx;
+				fn += g_sfx_energy;
+				path fp = g_tmpdir / fn;
+				trace_start(fp.string());
 			}
-			g_tmpdir = tokens[2];
-			g_pfx = tokens[3];
-			// Always print this on trace start so we detect any cheating.
-			cout << "m-dropthresh[" << std::setprecision(3) << g_drop_thresh << "]" << endl;
-			trace_start();
 		}
 		else if (tokens[1] == "off")
 		{
-			trace_stop();
+			if (g_device_spinning)
+			{
+				trace_stop();
+			}
 		}
 		else
 		{
-			cout << "e-['trace' options are 'on' or 'off']" << endl;
+			cout << "e-['trace' takes 'on' or 'off' (and optional tmpdir and file prefix]" << endl;
 		}
 	}
 	cout << "m-trace[" << (g_device_spinning ? "on" : "off") << "]" << endl;
@@ -323,11 +335,11 @@ cmd_timer(vector<string> tokens)
 	{
 		if (tokens[1] == "on")
 		{
-			g_observe_timestamps = true;
+			g_file_writer.m_observe_timestamps = true;
 		}
 		else if (tokens[1] == "off")
 		{
-			g_observe_timestamps = false;
+			g_file_writer.m_observe_timestamps = false;
 		}
 		else
 		{
@@ -335,7 +347,7 @@ cmd_timer(vector<string> tokens)
 			return;
 		}
 	}
-	cout << "m-timer[" << (g_observe_timestamps ? "on" : "off") << "]" << endl;
+	cout << "m-timer[" << (g_file_writer.m_observe_timestamps ? "on" : "off") << "]" << endl;
 }
 
 void
@@ -343,23 +355,23 @@ cmd_rate(vector<string> tokens)
 {
 	if (g_device_spinning)
 	{
+		// This would screw up all of the memory pointers
 		cout << "e-[Cannot change sample rate while tracing]" << endl;
-		return;
 	}
-	if (tokens.size() > 1)
+	else if (tokens.size() > 1)
 	{
 		int rate = stoi(tokens[1]);
 
 		if ((rate < 1) || (MAX_SAMPLE_RATE % rate) != 0)
 		{
-			cout << "e-[Sample rate must be a factor of 1'000'000]" << endl;
+			cout << "e-[Sample rate must be a factor of 2'000'000]" << endl;
 		}
 		else
 		{
-			//g_stats.set_samplerate(stoi(tokens[1]));
+			g_file_writer.samplerate(stoi(tokens[1]), MAX_SAMPLE_RATE);
 		}
 	}
-//	cout << "m-rate-hz[" << g_stats.m_sample_rate << "]" << endl;
+	cout << "m-rate-hz[" << g_file_writer.samplerate() << "]" << endl;
 }
 
 void
@@ -367,11 +379,13 @@ cmd_voltage(vector<string> tokens)
 {
 	if (g_device_spinning)
 	{
-		cout << "e-[Cannot talk to Joulescope while tracing]" << endl;
-		return;
+		// `get_voltage` is not thread safe, see notes in trace_start/stop.
+		cout << "e-[Cannot poll voltage while tracing]" << endl;
 	}
-	unsigned int mv = g_joulescope.get_voltage();
-	cout << "m-voltage-mv[" << mv << "]" << endl;
+	else
+	{
+		cout << "m-voltage-mv[" << g_joulescope.get_voltage() << "]" << endl;
+	}
 }
 
 void
@@ -396,7 +410,7 @@ sigint_handler(int _signal)
 	if (!cleanup_done)
 	{
 		cleanup_done = true;
-		g_waiting_on_user = false;
+		g_userin_spinning = false;
 		cmd_exit(vector<string>());
 	}
 }
@@ -416,10 +430,11 @@ main(int argc, char* argv[])
 	cout << "Joulescope(R) JS110 Win32 Driver" << endl;
 	cout << "Version : " << VERSION << endl;
 	cout << "Head    : " << PYJOULESCOPE_GITHUB_HEAD << endl;
-	g_waiting_on_user = true;
+	
+	g_userin_spinning = true;
 	try {
 		vector<string> tokens;
-		while (g_waiting_on_user)
+		while (g_userin_spinning)
 		{
 			tokens.clear();
 			getline(cin, line);

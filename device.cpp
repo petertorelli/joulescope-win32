@@ -810,6 +810,7 @@ private:
 	time_t        m_timeout;
 };
 
+// TODO: WinUsb has a synchronous control transfer function
 bool
 WinUsbDevice::control_transfer_out_sync(
 	UCHAR Recipient,
@@ -828,11 +829,12 @@ WinUsbDevice::control_transfer_out_sync(
 	this->control_transfer_out(lambda, Recipient, Type, Request, Value, Index, data);
 	while (!sync.isDone())
 	{
-		process(0.01f);
+		process(10);
 	}
 	return false;
 }
 
+// TODO: WinUsb has a synchronous control transfer function
 vector<UCHAR>
 WinUsbDevice::control_transfer_in_sync(
 	UCHAR Recipient,
@@ -851,11 +853,10 @@ WinUsbDevice::control_transfer_in_sync(
 	this->control_transfer_in(lambda, Recipient, Type, Request, Value, Index, Length);
 	while (!sync.isDone())
 	{
-		process(0.01f);
+		process(10);
 	}
 	return sync.response();
 }
-
 
 bool
 WinUsbDevice::control_transfer_out(
@@ -922,11 +923,6 @@ WinUsbDevice::read_stream_start(
 	UINT transfers,
 	UINT block_size,
 	RawBuffer *raw_buffer
-	/*
-	EndpointIn_data_fn_t data_fn,
-	EndpointIn_process_fn_t process_fn,
-	EndpointIn_stop_fn_t stop_fn
-	*/
 )
 {
 	DBG("WinUsbDevice::read_stream_start(endpoint_id=" << (int)endpoint_id << ")");
@@ -940,7 +936,7 @@ WinUsbDevice::read_stream_start(
 		m_endpoints.erase(itr);
 	}
 	DBG("WinUsbDevice::read_stream_start() ... creating & inserting endpoint");
-	EndpointIn endpoint(m_winusb, pipe_id, transfers, block_size, raw_buffer /*data_fn, process_fn, stop_fn*/);
+	EndpointIn endpoint(m_winusb, pipe_id, transfers, block_size, raw_buffer);
 	m_endpoints.insert(make_pair(pipe_id, endpoint));
 	//BUGBUG: the pair above is a COPY!
 	//endpoint.start(); <- so we can't do this. heh.
@@ -992,11 +988,10 @@ WinUsbDevice::_abort(int stop_code, string msg)
 }
 
 void
-WinUsbDevice::process(float timeout)
+WinUsbDevice::process(DWORD msec)
 {
 	DBG("WinUsbDevice::process(" << timeout << ")");
-	DWORD timeout_ms = (DWORD)(timeout * 1000.0f);
-	DWORD rv = WaitForMultipleObjects(m_event_list_count, m_event_list.data(), FALSE, timeout_ms);
+	DWORD rv = WaitForMultipleObjects(m_event_list_count, m_event_list.data(), FALSE, msec);
 	DBG("WinUsbDevice::process() rv = " << rv);
 	if (rv < MAXIMUM_WAIT_OBJECTS)
 	{

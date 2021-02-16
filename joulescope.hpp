@@ -115,7 +115,7 @@ public:
 	bool is_tracing(void);
 	// Control
 	void power_on(bool on);
-	void streaming_on(bool on, RawBuffer *raw_buffer = nullptr);
+	void streaming_on(bool on);
 	// Device discovery
 	std::wstring find_joulescope_by_serial_number(std::string serial_number = "");
 	std::vector<std::wstring> scan(void);
@@ -145,4 +145,10 @@ private:
 	JoulescopeState m_state;
 	std::wstring m_path;
 	bool m_open;
+	RawBuffer *m_raw_buffer_ptr = nullptr;
+public:
+	void set_raw_buffer(RawBuffer *ptr)
+	{
+		m_raw_buffer_ptr = ptr;
+	}
 };
