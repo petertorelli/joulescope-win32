@@ -2,6 +2,12 @@
 
 #include <iostream>
 
+#if 1
+#	define DBG(x) { cout << x << endl; }
+#else
+#	define DBG(x) {}
+#endif
+
 /**
  * Add a calibrated i/v sample to the raw buffer as energy. Downsample as
  * needed by using the accumulator. When the downsample interval elapses,
@@ -62,13 +68,17 @@ FileWriter::open(string fn)
 		NULL);
 	if (m_file_handle == INVALID_HANDLE_VALUE)
 	{
+		DBG("Unable to create FileWriter file handle");
 		throw runtime_error("Unable to create FileWriter file handle");
 	}
 	m_file_offset = 0;
 	m_total_samples = 0;
 	m_total_nan = 0;
 	m_total_accumulated = 0;
+	m_acc = 0;
 	m_buffer_pos = 0;
+	m_head = 0;
+	m_tail = 0;
 	//assert(2'000'000 % m_sample_rate == 0);
 	m_samples_per_downsample = 2'000'000u / m_sample_rate;
 	m_timestamps.clear();
@@ -124,6 +134,7 @@ FileWriter::save_acc(void)
 		m_buffer_pos = 0;
 		if (m_head == m_tail)
 		{
+			DBG("Ring-buffer exhausted");
 			throw runtime_error("Ring-buffer exhausted");
 		}
 		queue_page(saved_head, saved_len);
@@ -133,6 +144,7 @@ FileWriter::save_acc(void)
 void
 FileWriter::queue_page(unsigned page, unsigned len)
 {
+	cout << "Writing page " << page << endl;
 	ZeroMemory(&m_ov[page], sizeof(OVERLAPPED));
 	m_ov[page].hEvent = m_events[QUEUE_PAGE_EVENT];
 	m_ov[page].OffsetHigh = (m_file_offset >> 32) & 0xFFFF'FFFF;
@@ -147,6 +159,7 @@ FileWriter::queue_page(unsigned page, unsigned len)
 		DWORD err = GetLastError();
 		if (err != ERROR_IO_PENDING)
 		{
+			DBG("Failed to write queue_page");
 			throw runtime_error("Failed to write queue_page");
 		}
 	}
@@ -170,6 +183,7 @@ FileWriter::queue_bytes(LPCVOID bytes, unsigned len)
 		DWORD err = GetLastError();
 		if (err != ERROR_IO_PENDING)
 		{
+			DBG("Failed to write queue_bytes");
 			throw runtime_error("Failed to write queue_bytes");
 		}
 	}
@@ -192,12 +206,14 @@ FileWriter::wait(DWORD msec)
 			ResetEvent(m_events[event]);
 			break;
 		default:
+			DBG("Unexpected wait object");
 			throw runtime_error("Unexpected wait object");
 			break;
 		}
 	}
 	else if (ret != WAIT_TIMEOUT)
 	{
+		DBG("Wait failed");
 		throw runtime_error("Wait failed");
 	}
 }

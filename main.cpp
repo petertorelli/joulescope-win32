@@ -17,11 +17,17 @@
 #include "main.hpp"
 // Note: Only the device and raw_processor are critical.
 #define PYJOULESCOPE_GITHUB_HEAD "6b92e38"
-#define VERSION "1.5.0"
+#define VERSION "1.5.0x"
 
 using namespace std;
 using namespace std::filesystem;
 using namespace boost;
+
+#if 1
+#	define DBG(x) { cout << x << endl; }
+#else
+#	define DBG(x) {}
+#endif
 
 const string EEMBC_EMON_SUFFIX("-energy.bin");
 const string EEMBC_TIMESTAMP_SUFFIX("-timestamps.json");
@@ -142,6 +148,7 @@ trace_start(void)
 		NULL);
 	if (g_writer_thread == NULL)
 	{
+		DBG("Failed to create writer thread");
 		throw runtime_error("Failed to create writer thread");
 	}
 	/**
@@ -162,6 +169,7 @@ trace_start(void)
 		NULL);
 	if (g_device_thread == NULL)
 	{
+		DBG("Failed to create device thread");
 		throw runtime_error("Failed to create device thread");
 	}
 }
@@ -252,12 +260,14 @@ trace_stop(void)
 	rv = WaitForSingleObject(g_device_thread, 10000);
 	if (rv != WAIT_OBJECT_0)
 	{
+		DBG("Device thread failed to exit");
 		throw runtime_error("Device thread failed to exit");
 	}
 	g_writer_spinning = false;
 	rv = WaitForSingleObject(g_writer_thread, 10000);
 	if (rv != WAIT_OBJECT_0)
 	{
+		DBG("Writer thread failed to exit");
 		throw runtime_error("Writer thread failed to exit");
 	}
 	/**
