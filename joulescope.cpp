@@ -91,7 +91,6 @@ unsigned int
 Joulescope::get_voltage(void)
 {
 	vector<UCHAR> ctr;
-	cout << "Getting voltage\n";
 	ctr = m_device.control_transfer_in_sync(
 		BMREQUEST_TO_DEVICE,
 		BMREQUEST_VENDOR,

@@ -17,7 +17,7 @@
 #include "main.hpp"
 // Note: Only the device and raw_processor are critical.
 #define PYJOULESCOPE_GITHUB_HEAD "6b92e38"
-#define VERSION "1.5.0x"
+#define VERSION "1.6.0"
 
 using namespace std;
 using namespace std::filesystem;

@@ -19,6 +19,19 @@
 
 using namespace std;
 
+#if 0
+#	define DBG(x) { cout << x << endl; }
+#else
+#	define DBG(x) {}
+#endif
+
+#if 0
+#	define LOG(x) { cout << x << endl; }
+#else
+#	define LOG(x) {}
+#endif
+
+
 template<typename ... Args>
 string string_format(const string& format, Args ... args)
 {

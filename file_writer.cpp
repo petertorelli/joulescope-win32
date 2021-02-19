@@ -144,7 +144,6 @@ FileWriter::save_acc(void)
 void
 FileWriter::queue_page(unsigned page, unsigned len)
 {
-	cout << "Writing page " << page << endl;
 	ZeroMemory(&m_ov[page], sizeof(OVERLAPPED));
 	m_ov[page].hEvent = m_events[QUEUE_PAGE_EVENT];
 	m_ov[page].OffsetHigh = (m_file_offset >> 32) & 0xFFFF'FFFF;

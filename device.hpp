@@ -42,20 +42,6 @@ template<typename ... Args> std::string string_format(const std::string& format,
 
 #include "raw_buffer.hpp"
 
-// TODO: Cleanup logging and messaging.
-
-#if 0
-#	define DBG(x) { cout << x << endl; }
-#else
-#	define DBG(x) {}
-#endif
-
-#if 0
-#	define LOG(x) { cout << x << endl; }
-#else
-#	define LOG(x) {}
-#endif
-
 // Is this a USB thing or a Joulescope thing
 #define BULK_IN_LENGTH 512u // see usb/__init__.py
 
