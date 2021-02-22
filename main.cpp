@@ -17,7 +17,7 @@
 #include "main.hpp"
 // Note: Only the device and raw_processor are critical.
 #define PYJOULESCOPE_GITHUB_HEAD "6b92e38"
-#define VERSION "1.6.0"
+#define VERSION "1.7.0"
 
 using namespace std;
 using namespace std::filesystem;
@@ -174,6 +174,7 @@ trace_start(void)
 	}
 }
 
+// WORK IN PROGRESS
 void
 interpolate_nans(void)
 {
@@ -285,7 +286,6 @@ trace_stop(void)
 		<< g_fp_energy.filename().string()
 		<< "]-type[emon]-name[js110]"
 		<< endl;
-
 	// Always write out a timestamp file, even if empty
 	fstream file;
 	file.exceptions(std::ifstream::failbit | std::ifstream::badbit);
@@ -308,18 +308,25 @@ trace_stop(void)
 		<< g_fp_timestamps.filename().string()
 		<< "]-type[etime]-name[js110]"
 		<< endl;
-	// Did we drop any packets? If so, run lengthy flow
-	float pct = g_file_writer.nanpct();
+	// Did we drop any packets?
+	double pct = 0.0;
+	if (g_raw_buffer.m_total_pkts > 0)
+	{
+		pct = (double)g_raw_buffer.m_total_dropped_pkts /
+			(double)g_raw_buffer.m_total_pkts * 100;
+	}
+	// This message must match the framework ES6 message.
 	cout
-		<< "m-[Found "
-		<< setprecision(2) << pct << "% bad samples; limit is "
-		<< g_drop_thresh << "%" << endl;
+		<< "m-[Dropped " << g_raw_buffer.m_total_dropped_pkts
+		<< " packets out of " << g_raw_buffer.m_total_pkts
+		<< ", " << setprecision(5) << pct << "%]"
+		<< endl;
 	if (pct > g_drop_thresh)
 	{
 		cout
-			<< "e-[Bad sample percentage exceeded "
-			<< setprecision(2) << g_drop_thresh << "%"
-			<< endl;
+			<< "e-[Dropped more than "
+			<< setprecision(5) << g_drop_thresh
+			<< "% of packets]" << endl;
 	}
 }
 

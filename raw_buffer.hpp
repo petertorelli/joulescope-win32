@@ -25,10 +25,10 @@ public:
 		m_total_dropped_pkts = 0;
 		m_raw_pos = 0;
 	};
-private:
-	UINT16 m_last_pkt_index = 0;
 	size_t m_total_pkts = 0;
 	size_t m_total_dropped_pkts = 0;
+private:
+	UINT16 m_last_pkt_index = 0;
 	UINT32 m_raw[MAX_RAW_SAMPLES];
 	size_t m_raw_pos = 0;
 	RawProcessor *m_raw_processor = nullptr;
