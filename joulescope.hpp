@@ -19,7 +19,9 @@
 
 #include "device.hpp"
 #include "raw_processor.hpp"
+#include "raw_buffer.hpp"
 #include "json/json.h"
+#include "joulescope_packet.hpp"
 #include <boost\algorithm\string.hpp>
 
 #define PACKET_VERSION        1u
@@ -42,13 +44,6 @@ enum class JoulescopeRequest
 	TEST_MODE = 11  // Enter a test mode
 };
 
-enum class JoulescopePacketType
-{
-	SETTINGS = 1,
-	STATUS = 2,
-	EXTIO = 3,
-	INFO = 4
-};
 
 /**
  * See `datafile.py` for more details:
@@ -63,17 +58,6 @@ struct CalibrationHeader
 	uint32_t crc32;
 };
 
-struct JoulescopePacket {
-	uint8_t buffer_type;
-	uint8_t status;
-	uint16_t length;
-	uint16_t pkt_index;
-	uint16_t usb_frame_index;
-	struct sample {
-		uint16_t current;
-		uint16_t voltage;
-	} samples[126];
-};
 
 // Obviously this is an incomplete list of all settings
 // TODO: Fill this out to match the Python driver
@@ -131,11 +115,7 @@ public:
 	bool is_tracing(void);
 	// Control
 	void power_on(bool on);
-	void streaming_on(
-		bool on,
-		EndpointIn_data_fn_t data_fn = nullptr,
-		EndpointIn_process_fn_t process_fn = nullptr,
-		EndpointIn_stop_fn_t stop_fn = nullptr);
+	void streaming_on(bool on);
 	// Device discovery
 	std::wstring find_joulescope_by_serial_number(std::string serial_number = "");
 	std::vector<std::wstring> scan(void);
@@ -165,4 +145,10 @@ private:
 	JoulescopeState m_state;
 	std::wstring m_path;
 	bool m_open;
+	RawBuffer *m_raw_buffer_ptr = nullptr;
+public:
+	void set_raw_buffer(RawBuffer *ptr)
+	{
+		m_raw_buffer_ptr = ptr;
+	}
 };

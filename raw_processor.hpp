@@ -17,7 +17,10 @@
 
 #pragma once
 
-#include "device.hpp"
+#include <vector>
+#include <cinttypes>
+#include <stdexcept>
+#include "file_writer.hpp"
 
 #define _SUPPRESS_SAMPLES_MAX 512
 #define SUPPRESS_HISTORY_MAX    8
@@ -44,9 +47,6 @@ struct js_stream_buffer_calibration_s
 };
 
 
-typedef void (*raw_processor_cbk_fn)(void* user_data, float cal_i, float cal_v, uint8_t bits);
-
-
 class RawProcessor {
 public:
 	float   d_cal[_SUPPRESS_SAMPLES_MAX][2];    // as i, v
@@ -57,7 +57,12 @@ public:
 
 	js_stream_buffer_calibration_s _cal;
 
-	raw_processor_cbk_fn _cbk_fn;
+//	raw_processor_cbk_fn _cbk_fn;
+	void set_writer(FileWriter *ptr)
+	{
+		m_writer = ptr;
+	}
+	FileWriter *m_writer;
 	void* _cbk_user_data;
 
 	int32_t  is_skipping;
@@ -88,7 +93,6 @@ public:
 	uint32_t  bulk_index;
 	uint32_t  bulk_length;  // in samples
 	RawProcessor();
-	void callback_set(raw_processor_cbk_fn cbk, void* user_data);
 	void reset(void);
 	void calibration_set(js_stream_buffer_calibration_s cal);
 	void calibration_set(

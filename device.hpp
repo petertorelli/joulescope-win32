@@ -40,19 +40,7 @@ template<typename ... Args> std::string string_format(const std::string& format,
 #include <numeric>
 #include <algorithm>
 
-// TODO: Cleanup logging and messaging.
-
-#if 0
-#	define DBG(x) { cout << x << endl; }
-#else
-#	define DBG(x) {}
-#endif
-
-#if 0
-#	define LOG(x) { cout << x << endl; }
-#else
-#	define LOG(x) {}
-#endif
+#include "raw_buffer.hpp"
 
 // Is this a USB thing or a Joulescope thing
 #define BULK_IN_LENGTH 512u // see usb/__init__.py
@@ -71,7 +59,7 @@ enum class DeviceEvent
 };
 
 // TODO: This should pass a reference, otherwise we end up doing a lot of copying
-typedef bool (*EndpointIn_data_fn_t)(std::vector<UCHAR>);
+typedef bool (*EndpointIn_data_fn_t)(std::vector<UCHAR>&);
 typedef bool (*EndpointIn_process_fn_t)(void);
 typedef void (*EndpointIn_stop_fn_t)(int, std::string);
 
@@ -134,9 +122,7 @@ public:
 		UCHAR _pipe_id,
 		UINT _transfers,
 		UINT _block_size,
-		EndpointIn_data_fn_t data_fn,
-		EndpointIn_process_fn_t process_fn,
-		EndpointIn_stop_fn_t stop_fn
+		RawBuffer *raw_buffer
 	);
 private:
 	void _open(void);
@@ -164,9 +150,7 @@ private:
 	TransferOverlappedDeque m_overlapped_pending;
 	UINT m_transfers;
 	UINT m_transfer_size;
-	EndpointIn_data_fn_t m_data_fn;
-	EndpointIn_process_fn_t m_process_fn;
-	EndpointIn_stop_fn_t m_stop_fn;
+	RawBuffer *m_raw_buffer;
 	UINT m_process_transfers;
 	enum class state_e { ST_IDLE = 0, ST_RUNNING, ST_STOPPING };
 	state_e m_state;
@@ -354,13 +338,16 @@ public:
 		UCHAR endpoint_id,
 		UINT transfers,
 		UINT block_size,
+		RawBuffer *raw_buffer);
+		/*
 		EndpointIn_data_fn_t data_fn,
 		EndpointIn_process_fn_t process_fn,
 		EndpointIn_stop_fn_t stop_fn);
+		*/
 	void read_stream_stop(UCHAR endpoint_id);
 
 	void _abort(int stop_code, std::string msg);
-	void process(float timeout);
+	void process(DWORD msec);
 private:
 	std::wstring m_path;
 	HANDLE m_file;

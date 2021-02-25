@@ -1,6 +1,5 @@
 /**
  * Copyright 2021 Peter Torelli
- * Copyright 2020 Jetperch LLC
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,261 +17,284 @@
 #include "main.hpp"
 // Note: Only the device and raw_processor are critical.
 #define PYJOULESCOPE_GITHUB_HEAD "6b92e38"
-#define VERSION "1.4.0"
+#define VERSION "1.7.0"
 
-/**
- * TODO
- * 1. wide strings
- * 2. pass a reference for m_data vectors rather than a copy
- * 3. fix the m_overlapped buffer grow/shrink issue
- */
 using namespace std;
 using namespace std::filesystem;
 using namespace boost;
 
-path          g_tmpdir(".");
-path          g_pfx("js110");
-const path    g_sfx_energy("-energy.bin");
-const path    g_sfx_timestamps("-timestamps.json");
-fstream       g_trace_file;
-bool          g_spinning(false);
-bool          g_waiting_on_user(false);
-bool          g_observe_timestamps(false);
-bool          g_updates(false);
-HANDLE        g_hspin(NULL);
-RawProcessor  g_raw_processor;
-Joulescope    g_joulescope;
-TraceStats    g_stats;
-float		  g_drop_thresh(0.1);
-CommandTable  g_commands = {
-	std::make_pair("init",    Command{ cmd_init,    "[serial] Find the first JS110 (or by serial #) and initialize it." }),
-	std::make_pair("deinit",  Command{ cmd_deinit,  "De-initialize the current JS110." }),
-	std::make_pair("power",   Command{ cmd_power,   "[on|off] Get/set output power state." }),
-	std::make_pair("timer",   Command{ cmd_timer,   "[on|off] Get/set timestamping state." }),
-	std::make_pair("trace",   Command{ cmd_trace,   "[on path prefix|off] Get/set tracing and save files in 'path/prefix' (quote if 'path' uses spaces)." }),
-	std::make_pair("rate",    Command{ cmd_rate,    "Set the sample rate to an integer multiple of 1e6." }),
-	std::make_pair("voltage", Command{ cmd_voltage, "Report the internal 2s voltage mean in mv." }),
-	std::make_pair("updates", Command{ cmd_updates, "[on|off] Get/set one-second update state." }),
-	std::make_pair("exit",    Command{ cmd_exit,    "De-initialize (if necessary) and exit." }),
-	std::make_pair("help",    Command{ cmd_help,    "Print this help." }),
+#if 1
+#	define DBG(x) { cout << x << endl; }
+#else
+#	define DBG(x) {}
+#endif
+
+const string EEMBC_EMON_SUFFIX("-energy.bin");
+const string EEMBC_TIMESTAMP_SUFFIX("-timestamps.json");
+
+float		 g_drop_thresh(0.1f);
+
+// These are the primary "legos" that build the tracer.
+Joulescope   g_joulescope;
+RawProcessor g_raw_processor;
+FileWriter   g_file_writer;
+RawBuffer    g_raw_buffer;
+// Per the EEMBC framework, this is a file convention
+path         g_tmpdir(".");
+path         g_fp_energy(g_tmpdir / string("js110" + EEMBC_EMON_SUFFIX));
+path         g_fp_timestamps(g_tmpdir / string("js110" + EEMBC_TIMESTAMP_SUFFIX));
+// There are three spinning loops in this code:
+bool         g_device_spinning(false); // Device-driver process loop
+bool         g_writer_spinning(false); // Async file write tail-pointer incr.
+bool         g_userin_spinning(false); // Wait on user input.
+HANDLE       g_device_thread(NULL);
+HANDLE       g_writer_thread(NULL);
+CommandTable g_commands = {
+	make_pair("init",    Command{ cmd_init,    "[serial] Find the first JS110 (or by serial #) and initialize it." }),
+	make_pair("deinit",  Command{ cmd_deinit,  "De-initialize the current JS110." }),
+	make_pair("power",   Command{ cmd_power,   "[on|off] Get/set output power state." }),
+	make_pair("timer",   Command{ cmd_timer,   "[on|off] Get/set timestamping state." }),
+	make_pair("trace",   Command{ cmd_trace,   "[on path prefix|off] Get/set tracing and save files in 'path/prefix' (quote if 'path' uses spaces)." }),
+	make_pair("rate",    Command{ cmd_rate,    "Set the sample rate to an integer multiple of 1e6." }),
+	make_pair("voltage", Command{ cmd_voltage, "Report the internal 2s voltage average in mv." }),
+	make_pair("exit",    Command{ cmd_exit,    "De-initialize (if necessary) and exit." }),
+	make_pair("help",    Command{ cmd_help,    "Print this help." }),
 };
 
-/*
- * going old school here so there can be no question
+/**
+ * This thread handles USB endpoint processing in the driver (1 Hz). The
+ * function `process()` waits on an array of events and determines if an
+ * endpoint returned data or of an asynchronous control transfer completed.
  */
- /**
-  * The EndpointIn data_fn callback puts raw samples into the g_raw_*
-  * buffers. The EndpointIn process_fn reads them out and calls the
-  * RawProcessor, putting the resulting float values into another buffer.
-  * The raw buffers are flushed by the process_fn function. If process_fn
-  * can't respond fast enough, "Buffer overflow" is printed to the console.
-  * The RawProcessor callback flushes the float buffer every time it fills.
-  * It is up to the function that manages the file to flush the processed
-  * sample buffer to disk before closing.
-  *
-  * Here's the flow:
-  *
-  * endpoint_data_fn_callback -> get a packet and call ...
-  * queue_raw_sample -> queue the raw samples and complain if we overvlow.
-  * endpoint_process_fn_callback -> call RawProcessor.process in a loop...
-  * raw_processor_callback -> queue a calibrated sample from RawProcessor
-  * flush_processed_samples_to_disk --> writes calibrated samples to disk
-  */
-  // TODO: Should the ratio of buffer sizes depend on the sample rate?
-constexpr auto RAW_BUFFER_SIZE(1024 * 128);
-constexpr auto CAL_BUFFER_SIZE(1024 * 64);
-// Raw data
-uint16_t g_raw_i[RAW_BUFFER_SIZE];
-uint16_t g_raw_v[RAW_BUFFER_SIZE];
-size_t   g_num_buffered_raw(0);
-// Processed data
-float    g_cal_e[CAL_BUFFER_SIZE];
-size_t   g_num_buffered_cal(0);
-
 void
-queue_raw_sample(uint16_t _i, uint16_t _v)
-{
-	g_raw_i[g_num_buffered_raw] = _i;
-	g_raw_v[g_num_buffered_raw] = _v;
-	++g_num_buffered_raw;
-	if (g_num_buffered_raw >= RAW_BUFFER_SIZE)
-	{
-		cout << "Buffer overflow" << endl;
-		g_num_buffered_raw = 0;
-	}
-}
-
-bool
-endpoint_process_fn_callback(void)
-{
-	for (size_t j(0); j < g_num_buffered_raw; ++j)
-	{
-		g_raw_processor.process(g_raw_i[j], g_raw_v[j]);
-	}
-	//cout << "Processed " << g_num_buffered_raw << " samples." << endl;
-	g_num_buffered_raw = 0;
-	return false;
-}
-
-void
-flush_processed_samples_to_disk(void)
-{
-	// sizeof_t(float) had better be 4!
-	g_trace_file.write(reinterpret_cast<const char*>(g_cal_e), g_num_buffered_cal * 4);
-	//cout << "Wrote " << g_num_buffered_cal << " processed samples to disk." << endl;
-	g_num_buffered_cal = 0;
-}
-
-inline void
-gpi0_check(bool& last, bool current)
-{
-	float timestamp;
-	// packed bits : 7 : 6 = 0, 5 = voltage_lsb, 4 = current_lsb, 3 : 0 = i_range
-	if (last && !current)
-	{
-		if (g_observe_timestamps == true) {
-			timestamp = (float)g_stats.m_total_samples / (float)g_stats.m_sample_rate;
-			g_stats.m_timestamps.push_back(timestamp);
-			cout << "m-lap-us-" << (unsigned int)(timestamp * 1e6) << endl;
-		}
-	}
-	last = current;
-}
-
-inline void
-heartbeat(void)
-{
-	static uint64_t prev_dropped = 0;
-
-	// Has one second elapsed?
-	if ((g_stats.m_total_samples % g_stats.m_sample_rate) == 0)
-	{
-		if (g_updates || (g_stats.m_total_dropped_pkts > prev_dropped))
-		{
-			cout << "Total samples " << g_stats.m_total_samples;
-			cout << " # dropped packets " << g_stats.m_total_dropped_pkts;
-			cout << " [ # NaN=" << g_stats.m_total_nan;
-			cout << ", # inf=" << g_stats.m_total_inf;
-			cout << " ]";
-			cout << endl;
-		}
-		prev_dropped = g_stats.m_total_dropped_pkts;
-	}
-}
-
-inline void
-transcendental_check(float f)
-{
-	if (isnan(f))
-	{
-		++g_stats.m_total_nan;
-	}
-	if (isinf(f))
-	{
-		++g_stats.m_total_inf;
-	}
-}
-
-void
-raw_processor_callback(void *puser, float I, float V, uint8_t bits)
-{
-	double E = ((double)I * (double)V) / 2.0;
-	float Ef = (float)E;
-	transcendental_check(Ef);
-	g_stats.m_accumulator += E;
-	++g_stats.m_total_accumulated;
-	if (g_stats.m_total_accumulated == g_stats.m_total_downsamples)
-	{
-		++g_stats.m_total_samples;
-		g_cal_e[g_num_buffered_cal] = (float)g_stats.m_accumulator;
-		++g_num_buffered_cal;
-		if (g_num_buffered_cal == CAL_BUFFER_SIZE)
-		{
-			flush_processed_samples_to_disk(); // resets counter/index
-		}
-		g_stats.m_total_accumulated = 0;
-		g_stats.m_accumulator = 0;
-		heartbeat();
-	}
-	gpi0_check(g_stats.m_last_gpi0, ((bits >> 4) & 1) == 1);
-}
-
-void
-process_packet(JoulescopePacket* pkt)
-{
-	/*
-	cout << "Joulescope Packet" << endl;
-	cout << "  buffer_type = " << (int)pkt->buffer_type << endl;
-	cout << "  status = " << (int)pkt->status << endl;
-	cout << "  length = " << pkt->length << endl;
-	cout << "  pkt_index = " << pkt->pkt_index << endl;
-	cout << "  usb_frame_index = " << pkt->usb_frame_index << endl;
-	*/
-	uint16_t delta = pkt->pkt_index - g_stats.m_last_pkt_index;
-	if (delta > 1)
-	{
-		// Packet loss due to USB processing latency
-		g_stats.m_total_dropped_pkts += delta;
-	}
-	g_stats.m_last_pkt_index = pkt->pkt_index;
-	for (size_t i(0); i < 126; ++i) // TODO Magic #
-	{
-		queue_raw_sample(pkt->samples[i].current, pkt->samples[i].voltage);
-	}
-}
-
-// TODO this should be a reference otherwise we're copying lots of bytes
-bool
-endpoint_data_fn_callback(vector<UCHAR> data)
-{
-	JoulescopePacket* pkts = (JoulescopePacket*)data.data();
-	size_t num_pkts = data.size() / 512;
-	while (num_pkts--)
-	{
-		process_packet(pkts++);
-	}
-	return false;
-}
-
-void
-spin(void)
+device_spin(void)
 {
 	try
 	{
-		while (g_spinning == true)
+		while (g_device_spinning == true)
 		{
-			g_joulescope.m_device.process(1);
 			/**
-			 * Note that in the Python, there is a command queue here that
-			 * avoids races when issuing control transfers while streaming.
+			 * By default the device is configured for eight outstsanding
+			 * endoint transfers, each with 256 bulk transfers of 
+			 * 512 bytes, or 8*256*512=1MB. The pending overlapped transfers
+			 * are stored in a deque<>. However, the RawBuffer used by the
+			 * device can overflow as these transfers are deposited into it
+			 * by the device `_expire` operation that puts them into the
+			 * RawBuffer via `add_slice`. We need to service this routine
+			 * at the rate of the RawBuffer, which is 16MB. Since the JS110
+			 * can send back 2M samples, or 8MB/sec, we should service this
+			 * at least 2x the theoretical max of the RawBuffer.
 			 */
+			g_joulescope.m_device.process(1000); // milliseconds
 		}
 	}
 	catch (runtime_error re)
 	{
-		cout << "e-[Thread runtime error: " << re.what() << "]" << endl;
+		cout << "e-[Device thread runtime error: " << re.what() << "]" << endl;
 	}
 	catch (...)
 	{
-		cout << "e-[Unknown exception in thread]" << endl;
+		cout << "e-[Unknown exception in device thread]" << endl;
+	}
+}
+
+/**
+ * This thread advances the tail pointer in the file writer ring-buffer. The
+ * file writer downsamples raw data sent to it on the `process_signal`
+ * endpoint callback (by way of a RawProcessor callback). Every time an entry
+ * in the ring buffer fills, it is shipped of to an async WriteFile.
+ */
+void
+writer_spin(void)
+{
+	try
+	{
+		while (g_writer_spinning == true)
+		{
+			/**
+			 * This polling rate must exceed the bandwidth of the FileWriter.
+			 * It has 8 pages of 64K floats, or 8*64*1024*4=2MBytes. Since
+			 * the speed at which this drains depends on the downsampling rate
+			 * and the speed of the storage media, we need to process quickly.
+			 * Worst case would be the full 2Msamples per second which would
+			 * be 8MB/sec, so the slowest polling rate is 250msec. Since this
+			 * isn't an RTOS, go aggressive, 10msec.
+			 */
+			g_file_writer.wait(10); // milliseconds
+		}
+	}
+	catch (runtime_error re)
+	{
+		cout << "e-[Writer thread runtime error: " << re.what() << "]" << endl;
+	}
+	catch (...)
+	{
+		cout << "e-[Unknown exception in writer thread]" << endl;
 	}
 }
 
 void
-write_timestamps(void)
+trace_start(void)
 {
-	// Always write this file, even if no timestamps
-	path fn = g_pfx;
-	fn += g_sfx_timestamps;
-	path fp = g_tmpdir / fn;
+	g_raw_buffer.reset();
+	g_file_writer.open(g_fp_energy.string());
+	g_writer_spinning = true;
+	g_writer_thread = CreateThread(
+		NULL,
+		0,
+		(LPTHREAD_START_ROUTINE)writer_spin,
+		NULL,
+		0,
+		NULL);
+	if (g_writer_thread == NULL)
+	{
+		DBG("Failed to create writer thread");
+		throw runtime_error("Failed to create writer thread");
+	}
+	/**
+	 * NOTE:
+	 * We cannot call `streaming_on` after the device loop starts
+	 * because it calls into `process()` which is not re-entrant.
+	 * This can cause the deques to unexpectedly go to zero or
+	 * samples to be lost or worse.
+	 */
+	g_joulescope.streaming_on(true);
+	g_device_spinning = true;
+	g_device_thread = CreateThread(
+		NULL,
+		0,
+		(LPTHREAD_START_ROUTINE)device_spin,
+		NULL,
+		0,
+		NULL);
+	if (g_device_thread == NULL)
+	{
+		DBG("Failed to create device thread");
+		throw runtime_error("Failed to create device thread");
+	}
+}
+
+// WORK IN PROGRESS
+void
+interpolate_nans(void)
+{
+	// Need a C++ way to do this
+	FILE *fi = NULL;
+	FILE *fo = NULL;
+	errno_t err;
+	err = fopen_s(&fi, g_fp_energy.filename().string().c_str(), "rb");
+	if (err) throw runtime_error("Failed to open input file in nan flow");
+	err = fopen_s(&fo, g_fp_energy.filename().string().c_str(), "rb");
+	if (err) throw runtime_error("Failed to open output file in nan flow");
+	if (fi && fo)
+	{
+		float buf[1024];
+		float last_good_val = NAN;
+		float y0 = NAN, y1 = NAN, dy, inc;
+		size_t t0 = 0, t1 = 0, dt;
+		bool tracking = false;
+		size_t sample_idx = 0;
+		cout << "Removing tasty NaNs\n";
+		fseek(fi, 5, 0);
+		fseek(fo, 5, 0);
+		while (!feof(fi)) {
+			size_t numread = fread(buf, sizeof(float), 1024, fi);
+			cout << "Read " << numread << endl;
+			for (size_t i = 0; i < numread; ++i)
+			{
+				if (isnan(buf[i]))
+				{
+					if (!tracking)
+					{
+						y0 = last_good_val;
+						t0 = sample_idx;
+						tracking = true;
+					}
+				}
+				else
+				{
+					if (tracking)
+					{
+						tracking = false;
+						y1 = buf[i];
+						t1 = sample_idx;
+						if (isnan(y0))
+						{
+							throw runtime_error("Cannot interpolate if y0 is NAN");
+						}
+						dt = t1 - t0;
+						dy = t1 - y0;
+						inc = dt / dy;
+						if (dt == 0)
+						{
+							throw runtime_error("Cannot interpolate if dt is zero");
+						}
+					}
+					else
+					{
+						last_good_val = buf[i];
+					}
+				}
+				++sample_idx;
+			}
+		}
+		if (tracking)
+		{
+			throw runtime_error("Cannot interpolate when file ends with NAN");
+		}
+	}
+	if (fi)
+	{
+		fclose(fi);
+	}
+	if (fo)
+	{
+		fclose(fo);
+	}
+}
+
+void
+trace_stop(void)
+{
+	DWORD rv;
+	g_device_spinning = false;
+	rv = WaitForSingleObject(g_device_thread, 10000);
+	if (rv != WAIT_OBJECT_0)
+	{
+		DBG("Device thread failed to exit");
+		throw runtime_error("Device thread failed to exit");
+	}
+	g_writer_spinning = false;
+	rv = WaitForSingleObject(g_writer_thread, 10000);
+	if (rv != WAIT_OBJECT_0)
+	{
+		DBG("Writer thread failed to exit");
+		throw runtime_error("Writer thread failed to exit");
+	}
+	/**
+	 * NOTE:
+	 * We cannot call `streaming_off` before the device loop stops
+	 * because it calls into `process()` which is not re-entrant.
+	 * This can cause the deques to unexpectedly go to zero or
+	 * samples to be lost or worse.
+	 */
+	g_joulescope.streaming_on(false);
+	g_file_writer.close();
+	// Required by the framework
+	cout
+		<< "m-regfile-fn["
+		<< g_fp_energy.filename().string()
+		<< "]-type[emon]-name[js110]"
+		<< endl;
+	// Always write out a timestamp file, even if empty
 	fstream file;
 	file.exceptions(std::ifstream::failbit | std::ifstream::badbit);
-	file.open(fp, ios::out);
+	file.open(g_fp_timestamps, ios::out);
 	file << "[" << endl;
-	for (size_t i(0); i < g_stats.m_timestamps.size(); ++i)
+	for (size_t i(0); i < g_file_writer.m_timestamps.size(); ++i)
 	{
-		file << "\t" << g_stats.m_timestamps[i];
-		if (i < (g_stats.m_timestamps.size() - 1))
+		file << "\t" << g_file_writer.m_timestamps[i];
+		if (i < (g_file_writer.m_timestamps.size() - 1))
 		{
 			file << ",";
 		}
@@ -283,10 +305,29 @@ write_timestamps(void)
 	// Required by the framework
 	cout
 		<< "m-regfile-fn["
-		<< g_pfx.string()
-		<< g_sfx_timestamps.string()
+		<< g_fp_timestamps.filename().string()
 		<< "]-type[etime]-name[js110]"
 		<< endl;
+	// Did we drop any packets?
+	double pct = 0.0;
+	if (g_raw_buffer.m_total_pkts > 0)
+	{
+		pct = (double)g_raw_buffer.m_total_dropped_pkts /
+			(double)g_raw_buffer.m_total_pkts * 100;
+	}
+	// This message must match the framework ES6 message.
+	cout
+		<< "m-[Dropped " << g_raw_buffer.m_total_dropped_pkts
+		<< " packets out of " << g_raw_buffer.m_total_pkts
+		<< ", " << setprecision(5) << pct << "%]"
+		<< endl;
+	if (pct > g_drop_thresh)
+	{
+		cout
+			<< "e-[Dropped more than "
+			<< setprecision(5) << g_drop_thresh
+			<< "% of packets]" << endl;
+	}
 }
 
 void
@@ -302,7 +343,7 @@ void
 cmd_exit(vector<string> tokens)
 {
 	cmd_deinit(vector<string>());
-	// Required to let the host know the exit was OK
+	// Per EEMBC, required to let the host know the exit was OK
 	cout << "m-exit" << endl;
 	exit(0);
 }
@@ -310,14 +351,9 @@ cmd_exit(vector<string> tokens)
 void
 cmd_init(vector<string> tokens)
 {
-	if (g_spinning)
-	{
-		cout << "e-[Cannot talk to Joulescipe while streaming]" << endl;
-		return;
-	}
 	if (g_joulescope.is_open())
 	{
-		cout << "e-[A joulescope is already initialized, deinit first]" << endl;
+		cout << "e-[A Joulescope is already initialized, deinit first]" << endl;
 		return;
 	}
 	string serial = tokens.size() < 2 ? "" : tokens[1];
@@ -335,11 +371,17 @@ cmd_init(vector<string> tokens)
 	}
 	else
 	{
+		// Connect up all our pieces!
+		// The RawBuffer is connected to the Joulescope with Joulescope::trace_on();
 		g_joulescope.open(path.c_str());
+		g_raw_buffer.set_raw_processor(&g_raw_processor);
+		g_joulescope.set_raw_buffer(&g_raw_buffer);
+		g_raw_processor.calibration_set(g_joulescope.m_calibration);
+		g_raw_processor.set_writer(&g_file_writer);
+		g_file_writer.samplerate(1000, MAX_SAMPLE_RATE);
 		wcout << "m-[Opened Joulescope at path " << path << "]" << endl;
 	}
-	// A bit of a hack b/c JS110 LibUSB/WinUSB can be erratic.
-	if (tokens.size() == 3) {
+	if (tokens.size() > 2) {
 		g_drop_thresh = stof(tokens[2]);
 	}
 }
@@ -349,161 +391,70 @@ cmd_power(vector<string> tokens)
 {
 	if (tokens.size() > 1)
 	{
-		if (g_joulescope.is_open() == false)
+		if (g_device_spinning)
+		{
+			// `power_on` is not thread safe, see notes in trace_start/stop.
+			cout << "e-[Cannot change power state while tracing]" << endl;
+		}
+		else if (g_joulescope.is_open() == false)
 		{
 			cout << "e-[No Joulescopes are open]" << endl;
-			return;
 		}
-		if (tokens[1] == "on")
+		else if (tokens[1] == "on")
 		{
-			if (g_spinning)
-			{
-				cout << "e-[Cannot talk to Joulescope while tracing]" << endl;
-				return;
-			}
 			g_joulescope.power_on(true);
 		}
 		else if (tokens[1] == "off")
 		{
-			if (g_spinning)
-			{
-				cout << "e-[Cannot talk to Joulescope while tracing]" << endl;
-				return;
-			}
 			g_joulescope.power_on(false);
 		}
 		else
 		{
-			cout << "e-['power' options are 'on' or 'off']" << endl;
-			return;
+			cout << "e-['power' takes 'on' or 'off']" << endl;
+	}
 		}
-	}
 	cout << "m-power[" << (g_joulescope.is_powered() ? "on" : "off") << "]" << endl;
-}
-
-void
-trace_start()
-{
-	if (g_spinning)
-	{
-		cout << "e-[Trace is already running]" << endl;
-		return;
-	}
-	if (!g_joulescope.is_open())
-	{
-		cout << "e-[No Joulescopes are open]" << endl;
-		return;
-	}
-	g_raw_processor.callback_set(raw_processor_callback, nullptr);
-	// Seems awkward to do this here.
-	g_raw_processor.calibration_set(g_joulescope.m_calibration);
-	path fn = g_pfx;
-	fn += g_sfx_energy;
-	path fp = g_tmpdir / fn;
-	g_trace_file.open(fp, ios::binary | ios::out);
-	union {
-		float f;
-		uint8_t b[4];
-	} x;
-	x.f = (float)g_stats.m_sample_rate;
-	uint8_t version = 0xf1;
-	g_trace_file.write((char*)&version, 1);
-	g_trace_file.write((char*)x.b, 4);
-	g_stats.reset();
-	g_joulescope.power_on(true);
-	g_joulescope.streaming_on(true, endpoint_data_fn_callback, endpoint_process_fn_callback);
-	g_spinning = true;
-	g_hspin = CreateThread(
-		NULL,
-		0,
-		(LPTHREAD_START_ROUTINE)spin,
-		NULL,
-		0,
-		NULL);
-	if (g_hspin == NULL)
-	{
-		throw runtime_error("main::cmd_trace_start() ... Failed to CreateThread");
-	}
-}
-
-void
-trace_stop()
-{
-	if (g_spinning == false)
-	{
-		cout << "e-[Trace isn't running]" << endl;
-		return;
-	}
-	if (!g_joulescope.is_open())
-	{
-		cout << "e-[No Joulescopes are open]" << endl;
-		return;
-	}
-	g_spinning = false;
-	DWORD rv = WaitForSingleObject(g_hspin, 10000);
-	if (rv != WAIT_OBJECT_0)
-	{
-		throw runtime_error("main::cmd_trace_stop(): Trace thread failed to exit");
-	}
-	g_joulescope.streaming_on(false);
-	flush_processed_samples_to_disk();
-	g_trace_file.close();
-	// Required by the framework
-	cout
-		<< "m-regfile-fn["
-		<< g_pfx.string()
-		<< g_sfx_energy.string()
-		<< "]-type[emon]-name[js110]"
-		<< endl;
-	write_timestamps();
-	double pct = (double)g_stats.m_total_dropped_pkts
-		/ (double)g_stats.m_last_pkt_index * 100;
-	cout
-		<< "Dropped "
-		<< g_stats.m_total_dropped_pkts
-		<< " packets out of "
-		<< g_stats.m_last_pkt_index
-		<< ", "
-		<< std::setprecision(3) << pct
-		<< "%"
-		<< endl;
-	if (pct > g_drop_thresh)
-	{
-		cout
-			<< "e-[Dropped more than "
-			<< g_drop_thresh
-			<< "% of packets]"
-			<< endl;
-	}
 }
 
 void
 cmd_trace(vector<string> tokens) {
 	if (tokens.size() > 1)
 	{
-		if (tokens[1] == "on")
+		if (g_joulescope.is_open() == false)
 		{
-			if (tokens.size() != 4)
+			cout << "e-[No Joulescopes are open]" << endl;
+		}
+		else if (tokens[1] == "on")
+		{
+			if (!g_device_spinning)
 			{
-				cout << "e-['trace on' requires TMPDIR and PFX']" << endl;
-				return;
+				if (tokens.size() > 2)
+				{
+					g_tmpdir = tokens[2];
+				}
+				if (tokens.size() > 3)
+				{
+					g_fp_energy = g_tmpdir / (tokens[3] + EEMBC_EMON_SUFFIX);
+					g_fp_timestamps = g_tmpdir / (tokens[3] + EEMBC_TIMESTAMP_SUFFIX);
+				}
+				// Always print this on trace start so we detect any cheating.
+				cout << "m-dropthresh[" << std::setprecision(3) << g_drop_thresh << "]" << endl;
+				trace_start();
 			}
-			g_tmpdir = tokens[2];
-			g_pfx = tokens[3];
-			// Always print this on trace start so we detect any cheating.
-			cout << "m-dropthresh[" << std::setprecision(3) << g_drop_thresh << "]" << endl;
-			trace_start();
 		}
 		else if (tokens[1] == "off")
 		{
-			trace_stop();
+			if (g_device_spinning)
+			{
+				trace_stop();
+			}
 		}
 		else
 		{
-			cout << "e-['trace' options are 'on' or 'off']" << endl;
+			cout << "e-['trace' takes 'on' or 'off' (and optional tmpdir and file prefix]" << endl;
 		}
 	}
-	cout << "m-trace[" << (g_spinning ? "on" : "off") << "]" << endl;
+	cout << "m-trace[" << (g_device_spinning ? "on" : "off") << "]" << endl;
 }
 
 void
@@ -513,11 +464,11 @@ cmd_timer(vector<string> tokens)
 	{
 		if (tokens[1] == "on")
 		{
-			g_observe_timestamps = true;
+			g_file_writer.m_observe_timestamps = true;
 		}
 		else if (tokens[1] == "off")
 		{
-			g_observe_timestamps = false;
+			g_file_writer.m_observe_timestamps = false;
 		}
 		else
 		{
@@ -525,82 +476,57 @@ cmd_timer(vector<string> tokens)
 			return;
 		}
 	}
-	cout << "m-timer[" << (g_observe_timestamps ? "on" : "off") << "]" << endl;
-}
-
-void
-cmd_updates(vector<string> tokens)
-{
-	if (tokens.size() > 1)
-	{
-		if (tokens[1] == "on")
-		{
-			g_updates = true;
-		}
-		else if (tokens[1] == "off")
-		{
-			g_updates = false;
-		}
-		else
-		{
-			cout << "e-['updates' options are 'on' or 'off']" << endl;
-			return;
-		}
-	}
-	cout << "m-updates[" << (g_updates ? "on" : "off") << "]" << endl;
+	cout << "m-timer[" << (g_file_writer.m_observe_timestamps ? "on" : "off") << "]" << endl;
 }
 
 void
 cmd_rate(vector<string> tokens)
 {
-	if (g_spinning)
+	if (g_device_spinning)
 	{
+		// This would screw up all of the memory pointers
 		cout << "e-[Cannot change sample rate while tracing]" << endl;
-		return;
 	}
-	if (tokens.size() > 1)
+	else if (tokens.size() > 1)
 	{
-		g_stats.reset();
 		int rate = stoi(tokens[1]);
 
-		if ((rate < 1) || (MAX_SAMPLE_RATE % rate) != 0)
+		if ((rate < 1) || (rate > 2'000'000) || (MAX_SAMPLE_RATE % rate) != 0)
 		{
-			cout << "e-[Sample rate must be a factor of 1'000'000]" << endl;
+			cout << "e-[Sample rate must be a factor of 2'000'000]" << endl;
 		}
 		else
 		{
-			g_stats.set_samplerate(stoi(tokens[1]));
+			g_file_writer.samplerate(stoi(tokens[1]), MAX_SAMPLE_RATE);
 		}
 	}
-	cout << "m-rate-hz[" << g_stats.m_sample_rate << "]" << endl;
+	cout << "m-rate-hz[" << g_file_writer.samplerate() << "]" << endl;
 }
 
 void
 cmd_voltage(vector<string> tokens)
 {
-	if (g_spinning)
+	if (g_device_spinning)
 	{
-		cout << "e-[Cannot talk to Joulescope while tracing]" << endl;
-		return;
+		// `get_voltage` is not thread safe, see notes in trace_start/stop.
+		cout << "e-[Cannot poll voltage while tracing]" << endl;
 	}
-	unsigned int mv = g_joulescope.get_voltage();
-	cout << "m-voltage-mv[" << mv << "]" << endl;
+	else
+	{
+		cout << "m-voltage-mv[" << g_joulescope.get_voltage() << "]" << endl;
+	}
 }
 
 void
 cmd_deinit(vector<string> tokens)
 {
-	if (g_spinning)
+	if (g_device_spinning)
 	{
 		trace_stop();
 	}
 	if (g_joulescope.is_open())
 	{
 		g_joulescope.close();
-	}
-	if (g_trace_file.is_open())
-	{
-		g_trace_file.close();
 	}
 }
 
@@ -613,7 +539,7 @@ sigint_handler(int _signal)
 	if (!cleanup_done)
 	{
 		cleanup_done = true;
-		g_waiting_on_user = false;
+		g_userin_spinning = false;
 		cmd_exit(vector<string>());
 	}
 }
@@ -630,15 +556,14 @@ main(int argc, char* argv[])
 	signal(SIGTERM, sigint_handler);
 	signal(SIGBREAK, sigint_handler);
 
-	g_trace_file.exceptions(std::ifstream::failbit | std::ifstream::badbit);
-
 	cout << "Joulescope(R) JS110 Win32 Driver" << endl;
 	cout << "Version : " << VERSION << endl;
 	cout << "Head    : " << PYJOULESCOPE_GITHUB_HEAD << endl;
-	g_waiting_on_user = true;
+	
+	g_userin_spinning = true;
 	try {
 		vector<string> tokens;
-		while (g_waiting_on_user)
+		while (g_userin_spinning)
 		{
 			tokens.clear();
 			getline(cin, line);

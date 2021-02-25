@@ -76,11 +76,13 @@ RawProcessor::RawProcessor() {
 	reset();
 }
 
+/*
 void
 RawProcessor::callback_set(raw_processor_cbk_fn cbk, void* user_data) {
 	_cbk_fn = cbk;
 	_cbk_user_data = user_data;
 }
+*/
 /*
 * TODO: we don't support changing suppression mode yet
 string supress_mode(void) {
@@ -271,7 +273,7 @@ RawProcessor::process(uint16_t raw_i, uint16_t raw_v)
 				//log.warning('Suppression filter too long for actual data: %s > %s', _idx_out, _SUPPRESS_SAMPLES_MAX)
 				while (_idx_out >= _SUPPRESS_SAMPLES_MAX)
 				{
-					_cbk_fn(_cbk_user_data, NAN, NAN, 0xff);
+					m_writer->add(NAN, NAN, 0xff);
 					_idx_out -= 1;
 				}
 			}
@@ -286,7 +288,7 @@ RawProcessor::process(uint16_t raw_i, uint16_t raw_v)
 				{
 					sample_count += 1;
 					cal_i_pre += cal_i_step;
-					_cbk_fn(_cbk_user_data, cal_i_pre, d_cal[idx][1], d_bits[idx]);
+					m_writer->add(cal_i_pre, d_cal[idx][1], d_bits[idx]);
 					_history_insert(cal_i_pre, d_cal[idx][1]);
 				}
 				cal_i_pre = cal_i;
@@ -319,7 +321,7 @@ RawProcessor::process(uint16_t raw_i, uint16_t raw_v)
 				for (idx = 0; idx < _idx_out + 1 - _suppress_samples_post; ++idx)
 				{
 					sample_count += 1;
-					_cbk_fn(_cbk_user_data, cal_i, d_cal[idx][1], d_bits[idx]);
+					m_writer->add(cal_i, d_cal[idx][1], d_bits[idx]);
 					_history_insert(cal_i, d_cal[idx][1]);
 				}
 			}
@@ -328,7 +330,7 @@ RawProcessor::process(uint16_t raw_i, uint16_t raw_v)
 				for (suppress_idx = 0; suppress_idx < _idx_out + 1 /* _suppress_samples_post=0 */; ++suppress_idx)
 				{
 					sample_count += 1;
-					_cbk_fn(_cbk_user_data, NAN, NAN, d_bits[suppress_idx]);
+					m_writer->add(NAN, NAN, d_bits[suppress_idx]);
 				}
 
 			}
@@ -342,7 +344,7 @@ RawProcessor::process(uint16_t raw_i, uint16_t raw_v)
 			for (idx = _idx_out + 1 - _suppress_samples_post; idx < _idx_out + 1; ++idx)
 			{
 				sample_count += 1;
-				_cbk_fn(_cbk_user_data, d_cal[idx][0], d_cal[idx][1], d_bits[idx]);
+				m_writer->add(d_cal[idx][0], d_cal[idx][1], d_bits[idx]);
 				_history_insert(d_cal[idx][0], d_cal[idx][1]);
 			}
 			_idx_out = 0;
@@ -359,7 +361,7 @@ RawProcessor::process(uint16_t raw_i, uint16_t raw_v)
 		cal_i_pre = cal_i;
 		_history_insert(cal_i, cal_v);
 		sample_count += 1;
-		_cbk_fn(_cbk_user_data, cal_i, cal_v, bits);
+		m_writer->add(cal_i, cal_v, bits);
 		_idx_out = 0;
 	}
 	_i_range_last = i_range;
