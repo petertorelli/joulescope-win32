@@ -7,7 +7,6 @@ A basic CLI for the Jetperch Joulescope JS110 under native Win32 libraries. The 
 Starting the program initiates a simple command-line interface. It is intended to be used through a bidrectional pipe/IPC, rather than a user typing instructions. Here are the commands:
 
 ```
-help
 deinit - De-initialize the current JS110.
 exit - De-initialize (if necessary) and exit.
 help - Print this help.
@@ -35,6 +34,10 @@ The file `device.cpp` is effectively a line-by-line translation of the Matt Libe
 The CLI downsamples based on `samplerate`, which is a command that can get or set the final rate in Hertz. The `current_lsb` is used as a falling-edge counter, which generates an `m-lap-us-\d+` message on each falling edge. Be sure to ground gpi0 when developing to avoid spurious messages.
 
 The sampling code spins in its own thread until the command line parser thread recieves an `exit` or `stop-trace` command.
+
+As the sampling thread spins, it calls into a `RawBuffer` for data or processing. The data call hands the RawBuffer N number of packets. These packets are checked for validity, and any missign sequences are repalced with bad packets of 126 samples (to maintain the correct # of samples over time). When the sampling thread calls the process function, the RawBuffer sends the samples to the FileWriter by way of the RawProcessor. The callback for the RawProcesser calls into the FileWriter. The FileWriter downsamples the calibrated I/V values (and listens for an IN0 timestamp), and then stores the accumulated energy in a ring buffer. As each ring buffer fills, it is writen asynchronously (overlapped) with FileWrite. Another thread waits for completion and then advances the tail pointer of the ring buffer. This complex process is needed due to some slower media or heavily IT-managed systems, which can severaly slow down synchronous file I/O and cause loss of samples.
+
+Any time a packet index is missing, a dropped samples value is updated in the RawBuffer which is reported at the end.
 
 # Copyright
 
