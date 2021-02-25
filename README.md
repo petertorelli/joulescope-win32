@@ -35,7 +35,11 @@ The CLI downsamples based on `samplerate`, which is a command that can get or se
 
 The sampling code spins in its own thread until the command line parser thread recieves an `exit` or `stop-trace` command.
 
-As the sampling thread spins, it calls into a `RawBuffer` for data or processing. The data call hands the RawBuffer N number of packets. These packets are checked for validity, and any missign sequences are repalced with bad packets of 126 samples (to maintain the correct # of samples over time). When the sampling thread calls the process function, the RawBuffer sends the samples to the FileWriter by way of the RawProcessor. The callback for the RawProcesser calls into the FileWriter. The FileWriter downsamples the calibrated I/V values (and listens for an IN0 timestamp), and then stores the accumulated energy in a ring buffer. As each ring buffer fills, it is writen asynchronously (overlapped) with FileWrite. Another thread waits for completion and then advances the tail pointer of the ring buffer. This complex process is needed due to some slower media or heavily IT-managed systems, which can severaly slow down synchronous file I/O and cause loss of samples.
+As the sampling thread spins, it calls into a `RawBuffer` for initial 2Msmp/s data storage. The data callback hands the `RawBuffer` a number of packets. These packets' indices are checked, and any missing packed IDs are replaced with bad packets of 126 bad samples (to maintain the correct # of samples over time). Later on these become NaN values during raw processing.
+
+When the sampling thread calls the `RawBuffer`'s process callback function, the `RawBuffer` sends the samples to the `FileWriter` by way of the `RawProcessor`. The callback for the `RawProcesser` calls into the `FileWriter`. The `FileWriter` then downsamples the calibrated I/V values by accumulating (and listens for an IN0 timestamp), and then stores the accumulated energy sample in a ring buffer. As each ring buffer fills, it is writen asynchronously (overlapped) with Windows `WriteFile`. Another thread waits for completion of these overlapped writes and then advances the tail pointer of the ring buffer.
+
+This complex process is needed due to some slower media or heavily IT-managed systems, which can severaly slow down synchronous file I/O and cause loss of samples.
 
 Any time a packet index is missing, a dropped samples value is updated in the RawBuffer which is reported at the end.
 
