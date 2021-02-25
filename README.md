@@ -1,19 +1,23 @@
 # joulescope-win32
 
-A basic CLI for the Jetperch Joulescope JS110 under native Win32 libraries. The current goal of this project is to provide a driver for EEMBC's IoTConnect framework, so it may appear a bit opinionated (e.g., timestamp behavior). This may (or may not) change in the future.
+A basic CLI for the Jetperch Joulescope JS110 under native Win32 libraries. The current goal of this project is to provide a driver for EEMBC's benchmark framework, so it may appear a bit opinionated (e.g., timestamp behavior). This may (or may not) change in the future.
 
 # Usage
 
-Starting the program initiates a simple command-line interface. It is intended to be used through a bidrectional pipe, rather than a user typing instructions. Here are the commands:
+Starting the program initiates a simple command-line interface. It is intended to be used through a bidrectional pipe/IPC, rather than a user typing instructions. Here are the commands:
 
-1. `exit` - De-initialize the hardware and exit the app.
-2. `init [SERIAL#]` - Initialize a JS110 by serial number, or the first one found.
-3. `deinit` - Stop tracing, release the USB interface, close any files (does not exit).
-4. `power [on|off]` - Turn on power to the device under test, or indicate status
-6. `trace-start [path] [prefix] ` - Begin logging trace samples at the requested sample rate at a path starting with a prefix and ending with `-energy.bin`. Path defaults to "." and prefix "js110".
-7. `trace-stop` - Stop tracing and close the trace file.
-8. `timestamps [on|off]` - Log samples with GPIO0 falling edge to the file `[path]/[prefix]-timestamps.json`. Multiple falling edges in a downsample are counted as one for that sample.
-10. `samplerate [HZ]` - Set the sample rate in Hz, or report back current rate. Must be a factor of 1,000,000.
+```
+help
+deinit - De-initialize the current JS110.
+exit - De-initialize (if necessary) and exit.
+help - Print this help.
+init - [serial] Find the first JS110 (or by serial #) and initialize it.
+power - [on|off] Get/set output power state.
+rate - Set the sample rate to an integer multiple of 1e6.
+timer - [on|off] Get/set timestamping state.
+trace - [on [path prefix]|off] Get/set tracing and save files in 'path/prefix' (quote if 'path' uses spaces).
+voltage - Report the internal 2s voltage average in mv.
+```
 
 The output energy file format is:
 ~~~
