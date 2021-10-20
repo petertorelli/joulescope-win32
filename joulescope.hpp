@@ -23,6 +23,7 @@
 #include "dist/json/json.h"
 #include "joulescope_packet.hpp"
 #include <boost\algorithm\string.hpp>
+#include <boost\lexical_cast.hpp>
 
 #define PACKET_VERSION        1u
 #define MAX_SAMPLE_RATE       2'000'000u // 2 4-byte floats per second = 2MS/sec

@@ -238,7 +238,9 @@ Joulescope::calibration_read_raw(void)
 	);
 	if (data.size() < 32)
 	{
-		throw runtime_error("Queried calibration data is too small.");
+		throw runtime_error(
+			"Queried calibration header is too small: expected 32B, got " +
+			boost::lexical_cast<std::string>(data.size()) + "B");
 	}
 	CalibrationHeader *hdr = (CalibrationHeader*)data.data();
 	//cout << "Calibration Length : " << hdr->length << endl;
