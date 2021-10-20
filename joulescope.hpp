@@ -20,7 +20,7 @@
 #include "device.hpp"
 #include "raw_processor.hpp"
 #include "raw_buffer.hpp"
-#include "json/json.h"
+#include "dist/json/json.h"
 #include "joulescope_packet.hpp"
 #include <boost\algorithm\string.hpp>
 
